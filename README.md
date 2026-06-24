@@ -1,11 +1,5 @@
 # Emry
 
-**Gentle observability for long training runs.**
-
-Open-source (Apache 2.0) training observability: live TUI and web charts, cluster sidecar mode, and fast metric ingest — Rust core with a PyTorch-friendly Python SDK.
-
-**Repository:** [github.com/femboyisp/emry](https://github.com/femboyisp/emry)
-
 ## Status
 
 Early development (M0). The workspace compiles; CLI and Python SDK are stubs.
@@ -30,7 +24,7 @@ emry watch ./logs/llama-sft_20260621_120000
 
 ### Prerequisites
 
-- Rust 1.85+ (`rust-toolchain.toml` pins the toolchain)
+- Rust 1.87+ (`rust-toolchain.toml` pins the toolchain)
 - `llvm-tools-preview` for coverage: `rustup component add llvm-tools-preview`
 - `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
 - Python 3.10+ for hooks and the future SDK
