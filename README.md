@@ -60,7 +60,6 @@ Hooks run: trailing whitespace, YAML/TOML checks, then `./scripts/pre-commit-rus
 | Rust line coverage | **≥ 90%** (workspace) |
 | Python line coverage | **≥ 90%** (`pytest --cov-fail-under=90`) |
 
-Planning docs (design, kanban, implementation plan) live in local `docs/` — **gitignored**, not pushed to GitHub.
 
 ## License
 
