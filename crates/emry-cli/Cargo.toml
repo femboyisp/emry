@@ -1,0 +1,25 @@
+[package]
+name = "emry-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Emry training observability — CLI binary"
+
+[lints]
+workspace = true
+
+[lib]
+name = "emry_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "emry"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[dev-dependencies]
+# clap testing uses lib tests

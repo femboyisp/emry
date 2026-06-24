@@ -1,0 +1,33 @@
+# Install: pip install pre-commit && pre-commit install
+# Manual:  ./scripts/pre-commit-rust.sh
+
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+
+  - repo: local
+    hooks:
+      - id: emry-rust-ci
+        name: emry rust (fmt, clippy, test, coverage ≥90%)
+        entry: scripts/pre-commit-rust.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: emry-python-ci
+        name: emry python (pytest, coverage ≥90%)
+        entry: scripts/pre-commit-python.sh
+        language: system
+        pass_filenames: false
+        always_run: true

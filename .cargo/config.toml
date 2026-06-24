@@ -1,0 +1,4 @@
+[alias]
+ci = "run --locked --workspace --all-targets --all-features -- -D warnings"
+cov = "llvm-cov --workspace --lcov --output-path lcov.info"
+cov-check = "llvm-cov --workspace --summary-only --fail-under-lines 90"

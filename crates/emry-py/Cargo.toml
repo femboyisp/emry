@@ -1,0 +1,18 @@
+[package]
+name = "emry-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Emry training observability — PyO3 bindings"
+
+[lints]
+workspace = true
+
+[lib]
+name = "emry_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+emry-core = { path = "../emry-core" }
