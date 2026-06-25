@@ -38,6 +38,12 @@ async fn main() {
                 phase,
                 values: vec![(loss, value), (lr, 1e-3), (ema, base)],
             });
+            if step % 300 == 0 && step > 0 {
+                feed.publish(&Event::Checkpoint {
+                    path: format!("/ckpt/step_{step}.pt"),
+                    step,
+                });
+            }
             if step == 100 {
                 feed.publish(&Event::Alert(emry_core::AlertRecord {
                     severity: emry_core::Severity::Warning,
