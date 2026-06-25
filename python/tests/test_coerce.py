@@ -76,13 +76,22 @@ def test_coerce_metrics_names_offending_key():
         coerce_metrics({"good": 1.0, "bad": None})
 
 
+def test_complex_scalar_item_raises_typeerror():
+    # .item() succeeds but yields a complex, which float() rejects.
+    with pytest.raises(TypeError, match="item"):
+        to_float(_Scalar(complex(1, 2)))
+
+
 def test_numpy_scalars_when_available():
     np = pytest.importorskip("numpy")
     assert to_float(np.float32(2.0)) == 2.0
     assert to_float(np.int64(5)) == 5.0
+    assert to_float(np.bool_(True)) == 1.0
     assert to_float(np.array(3.0)) == 3.0  # 0-dim array
     with pytest.raises(TypeError):
         to_float(np.array([1.0, 2.0]))  # multi-element
+    with pytest.raises(TypeError):
+        to_float(np.complex128(1 + 2j))  # not a real scalar
 
 
 def test_torch_tensors_when_available():

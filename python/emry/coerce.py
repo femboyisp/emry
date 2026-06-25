@@ -41,7 +41,13 @@ def to_float(value: Any) -> float:
             raise TypeError(
                 f"cannot coerce non-scalar {type(value).__name__} to float: {exc}"
             ) from exc
-        return float(scalar)
+        try:
+            return float(scalar)
+        except (TypeError, ValueError) as exc:
+            # e.g. a 0-dim complex tensor: .item() succeeds but isn't a real.
+            raise TypeError(
+                f"cannot coerce {type(value).__name__}.item() to float: {exc}"
+            ) from exc
 
     try:
         return float(value)
