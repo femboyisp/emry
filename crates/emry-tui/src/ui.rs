@@ -16,7 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Warm brand palette (design §13).
 pub const CREAM: Color = Color::Rgb(0xF5, 0xF0, 0xE8);
@@ -37,8 +37,8 @@ pub struct MetricView {
     pub label: String,
     /// Most recent value.
     pub latest: f64,
-    /// Recent values, oldest first (capped).
-    pub history: Vec<f64>,
+    /// Recent values, oldest first (capped FIFO).
+    pub history: VecDeque<f64>,
 }
 
 /// The full dashboard state, reduced from the event stream.
@@ -145,16 +145,17 @@ impl UiState {
         } else {
             self.metrics.push(MetricView {
                 id,
-                label,
+                label: label.clone(),
                 latest: value,
-                history: Vec::new(),
+                history: VecDeque::new(),
             });
             self.metrics.last_mut().expect("just pushed")
         };
+        view.label = label; // refresh in case labels were seeded after first use
         view.latest = value;
-        view.history.push(value);
+        view.history.push_back(value);
         if view.history.len() > max_history {
-            view.history.remove(0);
+            view.history.pop_front(); // O(1) FIFO drop, not O(n) shift
         }
     }
 
@@ -253,7 +254,8 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     // Inner drawable area excludes the one-cell border on each side.
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner_h = area.height.saturating_sub(2) as usize;
-    let lines: Vec<Line> = render_braille(&metric.history, inner_w, inner_h)
+    let history: Vec<f64> = metric.history.iter().copied().collect();
+    let lines: Vec<Line> = render_braille(&history, inner_w, inner_h)
         .into_iter()
         .map(|row| Line::from(Span::styled(row, Style::default().fg(TERRACOTTA))))
         .collect();
@@ -330,7 +332,10 @@ mod tests {
         assert_eq!(s.metrics.len(), 1);
         assert_eq!(s.metrics[0].label, "loss");
         assert_eq!(s.metrics[0].latest, 0.5);
-        assert_eq!(s.metrics[0].history, vec![1.0, 0.5]);
+        assert_eq!(
+            s.metrics[0].history.iter().copied().collect::<Vec<_>>(),
+            vec![1.0, 0.5]
+        );
     }
 
     #[test]
@@ -348,7 +353,10 @@ mod tests {
             s.apply(&batch(step, &[(0, step as f64)]));
         }
         assert_eq!(s.metrics[0].history.len(), 3);
-        assert_eq!(s.metrics[0].history, vec![7.0, 8.0, 9.0]);
+        assert_eq!(
+            s.metrics[0].history.iter().copied().collect::<Vec<_>>(),
+            vec![7.0, 8.0, 9.0]
+        );
     }
 
     #[test]

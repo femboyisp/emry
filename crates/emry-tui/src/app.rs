@@ -83,13 +83,18 @@ pub fn run<B: Backend>(
             }
         }
 
-        terminal.draw(|frame| render(frame, state))?;
+        // Pausing freezes the display (state keeps updating underneath); the
+        // dashboard also stays up after a run finishes so final values can be
+        // read — it exits only on Quit (or the test frame limit).
+        if !state.paused {
+            terminal.draw(|frame| render(frame, state))?;
+        }
         frames += 1;
 
-        match limit {
-            RunLimit::Frames(max) if frames >= max => return Ok(()),
-            RunLimit::UntilQuit if state.finished && events.is_empty() => return Ok(()),
-            _ => {}
+        if let RunLimit::Frames(max) = limit {
+            if frames >= max {
+                return Ok(());
+            }
         }
         if !frame_interval.is_zero() {
             std::thread::sleep(frame_interval);
@@ -100,10 +105,15 @@ pub fn run<B: Backend>(
 /// Reads key events from the real terminal until quit, forwarding decoded
 /// [`Action`]s on `tx`. Blocks; intended for a dedicated thread.
 ///
+/// Uses `try_send` on the bounded channel: under key-autorepeat flooding while
+/// the loop sleeps through a frame, excess actions are dropped rather than
+/// growing the queue.
+///
 /// # Errors
 ///
 /// Returns a crossterm read error.
 pub fn read_keys(tx: &crossbeam_channel::Sender<Action>) -> io::Result<()> {
+    use crossbeam_channel::TrySendError;
     loop {
         if let event::Event::Key(KeyEvent {
             code,
@@ -112,9 +122,10 @@ pub fn read_keys(tx: &crossbeam_channel::Sender<Action>) -> io::Result<()> {
         }) = event::read()?
         {
             let action = map_key(code);
-            // Stop forwarding once the user quits or the receiver is gone.
-            if tx.send(action).is_err() || action == Action::Quit {
-                return Ok(());
+            match tx.try_send(action) {
+                Ok(()) if action == Action::Quit => return Ok(()),
+                Ok(()) | Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Disconnected(_)) => return Ok(()),
             }
         }
     }
@@ -141,7 +152,7 @@ pub fn run_terminal(events: &Receiver<Event>, mut state: UiState) -> io::Result<
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let (input_tx, input_rx) = crossbeam_channel::unbounded();
+    let (input_tx, input_rx) = crossbeam_channel::bounded(64);
     let reader = std::thread::spawn(move || {
         let _ = read_keys(&input_tx);
     });
@@ -262,15 +273,11 @@ mod tests {
     }
 
     #[test]
-    fn until_quit_stops_when_finished_and_drained() {
+    fn paused_state_skips_redraw_but_keeps_consuming_events() {
         let (etx, erx) = unbounded();
-        let (_itx, irx) = unbounded();
-        etx.send(Event::RunFinished {
-            duration_secs: 1.0,
-            reason: emry_core::FinishReason::Completed,
-        })
-        .unwrap();
-        drop(etx);
+        let (itx, irx) = unbounded();
+        itx.send(Action::TogglePause).unwrap();
+        etx.send(batch(0, 1.0)).unwrap();
         let mut state = UiState::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         run(
@@ -278,10 +285,12 @@ mod tests {
             &erx,
             &irx,
             &mut state,
-            RunLimit::UntilQuit,
+            RunLimit::Frames(1),
             Duration::ZERO,
         )
         .unwrap();
-        assert!(state.finished);
+        // Paused: event still applied to state, but the screen was not drawn.
+        assert!(state.paused);
+        assert_eq!(state.metrics.len(), 1);
     }
 }
