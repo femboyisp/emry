@@ -394,6 +394,13 @@ impl Worker {
 
     /// Runs the derived-metric processors and publishes their outputs to the bus
     /// (live observers only — not persisted; see `Engine::start`).
+    ///
+    /// A derived batch carries the triggering event's `step`/`epoch`/`phase` and
+    /// is an ordinary [`Event::MetricsBatch`] — bus observers cannot distinguish
+    /// it from a raw one. That is fine for the only consumers (live TUI/web
+    /// display, which treat every metric uniformly); the persisted audit/metric
+    /// logs come from the worker's direct `sink` writes, not the bus, so they are
+    /// never contaminated by derived values.
     fn publish_derived(&mut self, event: &Event) {
         let Some((step, epoch, phase)) = step_context(event) else {
             return; // processors only emit for metric events
@@ -695,18 +702,21 @@ mod tests {
         cfg.track_throughput = false;
         let mut run = Engine::start(cfg).unwrap();
         let observer = run.bus().subscribe();
+        // Ids the derived series *would* use if enabled.
+        let loss_ema = run.register("loss_ema");
+        let sps = run.register("steps_per_sec");
         let loss = run.register("loss");
-        run.emit(&[(loss, 1.0)]);
+        for step in 0..5 {
+            run.emit(&[(loss, f64::from(step))]);
+        }
         run.finish().unwrap();
 
-        // Every batch on the bus is a raw single-metric emit; no derived batches.
-        let derived = observer
-            .try_iter()
-            .any(|e| matches!(e, Event::MetricsBatch { values, .. } if values.len() > 1));
-        assert!(
-            !derived,
-            "no derived metrics when smoothing/throughput are off"
-        );
+        // No bus event carries a derived id when both are disabled.
+        let saw_derived = observer.try_iter().any(|e| {
+            matches!(e, Event::MetricsBatch { values, .. }
+                if values.iter().any(|(id, _)| *id == loss_ema || *id == sps))
+        });
+        assert!(!saw_derived, "no derived metrics when both are disabled");
     }
 
     #[test]
