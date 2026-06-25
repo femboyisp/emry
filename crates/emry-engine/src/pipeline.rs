@@ -5,12 +5,19 @@
 //! 2. forwards each raw [`Event`] to the [`EventBus`] for observers, and
 //! 3. runs every [`Processor`], emitting their [`DerivedMetric`]s on a channel.
 //!
-//! It shuts down gracefully when it sees [`Event::RunFinished`] or when
-//! [`Pipeline::stop`] is called (or the [`Pipeline`] is dropped). Because the
-//! loop only exits while the ring is empty, all queued events are drained first.
+//! # Shutdown
+//!
+//! - [`Event::RunFinished`] is the **graceful** path: it is the last event a run
+//!   emits, so by the time it is processed every prior event has been drained
+//!   and forwarded. The thread exits after handling it.
+//! - [`Pipeline::stop`] (and [`Pipeline`]'s `Drop`) is a **prompt, best-effort**
+//!   shutdown: the flag is checked at the top of every iteration, so the thread
+//!   exits within one iteration regardless of how fast the producer is pushing.
+//!   Events still queued in the ring at that point are abandoned — this keeps
+//!   `Drop` bounded-time even against a producer that never stops.
 
 use crate::processor::{DerivedMetric, Processor};
-use crossbeam_channel::{unbounded, Receiver};
+use crossbeam_channel::{bounded, Receiver};
 use emry_core::{Event, EventBus, EventConsumer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -21,13 +28,19 @@ use std::time::Duration;
 /// latency against idle CPU.
 const POLL_INTERVAL: Duration = Duration::from_micros(200);
 
+/// Default capacity of the derived-metric channel. Bounded (like the ring and
+/// bus) so an undrained receiver drops rather than grows memory unbounded.
+pub const DEFAULT_DERIVED_CAPACITY: usize = 16_384;
+
 /// Counts of work done by the pipeline, returned when it finishes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PipelineStats {
     /// Number of events drained from the ring and processed.
     pub events_processed: u64,
-    /// Number of derived metrics emitted by processors.
+    /// Number of derived metrics successfully sent to the receiver.
     pub derived_emitted: u64,
+    /// Number of derived metrics dropped because the receiver was full or gone.
+    pub derived_dropped: u64,
 }
 
 /// A running processing pipeline. Drop or [`join`](Pipeline::join) to finish.
@@ -37,41 +50,57 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    /// Spawns the pipeline thread, returning the handle and the receiver for
-    /// derived metrics emitted by `processors`.
+    /// Spawns the pipeline thread with [`DEFAULT_DERIVED_CAPACITY`] for the
+    /// derived-metric channel.
     #[must_use]
     pub fn spawn(
+        consumer: EventConsumer,
+        processors: Vec<Box<dyn Processor>>,
+        bus: Arc<EventBus>,
+    ) -> (Self, Receiver<DerivedMetric>) {
+        Self::spawn_with_capacity(consumer, processors, bus, DEFAULT_DERIVED_CAPACITY)
+    }
+
+    /// Spawns the pipeline thread, returning the handle and the receiver for
+    /// derived metrics emitted by `processors`. `derived_capacity` bounds the
+    /// derived-metric channel; metrics emitted while it is full are dropped.
+    #[must_use]
+    pub fn spawn_with_capacity(
         mut consumer: EventConsumer,
         mut processors: Vec<Box<dyn Processor>>,
         bus: Arc<EventBus>,
+        derived_capacity: usize,
     ) -> (Self, Receiver<DerivedMetric>) {
-        let (derived_tx, derived_rx) = unbounded();
+        let (derived_tx, derived_rx) = bounded(derived_capacity);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
 
         let handle = std::thread::spawn(move || {
             let mut stats = PipelineStats::default();
             loop {
+                // Prompt shutdown: checked every iteration so Drop is bounded
+                // even under a continuously-pushing producer.
+                if stop_thread.load(Ordering::Acquire) {
+                    break;
+                }
                 if let Some(event) = consumer.pop() {
                     bus.publish(&event);
                     stats.events_processed += 1;
                     for processor in &mut processors {
                         for derived in processor.on_event(&event) {
-                            stats.derived_emitted += 1;
-                            // Ignore send errors: a dropped receiver just means
-                            // nobody is consuming derived metrics.
-                            let _ = derived_tx.send(derived);
+                            // Bounded, drop-on-full: a full or disconnected
+                            // receiver drops the metric rather than blocking.
+                            if derived_tx.try_send(derived).is_ok() {
+                                stats.derived_emitted += 1;
+                            } else {
+                                stats.derived_dropped += 1;
+                            }
                         }
                     }
                     if matches!(event, Event::RunFinished { .. }) {
                         break;
                     }
                 } else {
-                    // Only stop when the ring is drained, so pending events are
-                    // never abandoned.
-                    if stop_thread.load(Ordering::Relaxed) {
-                        break;
-                    }
                     std::thread::sleep(POLL_INTERVAL);
                 }
             }
@@ -87,9 +116,11 @@ impl Pipeline {
         )
     }
 
-    /// Requests a graceful shutdown: the thread drains the ring, then exits.
+    /// Requests a prompt, best-effort shutdown. The thread exits within one
+    /// iteration; events still queued in the ring may be abandoned. For an
+    /// ordered drain, emit [`Event::RunFinished`] instead.
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Release);
     }
 
     /// Waits for the pipeline thread to finish and returns its stats.
@@ -110,7 +141,7 @@ impl Pipeline {
 impl Drop for Pipeline {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            self.stop.store(true, Ordering::Relaxed);
+            self.stop.store(true, Ordering::Release);
             let _ = handle.join();
         }
     }
@@ -213,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_drains_remaining_events_without_run_finished() {
+    fn stop_terminates_promptly_without_run_finished() {
         let (mut producer, consumer) = event_ring_with_capacity(256);
         let bus = Arc::new(EventBus::new());
 
@@ -222,9 +253,30 @@ mod tests {
         let (pipeline, _derived_rx) =
             Pipeline::spawn(consumer, vec![Box::new(NoOp)], Arc::clone(&bus));
         pipeline.stop();
+        // Must return (no hang) and never process more than was pushed.
+        let stats = pipeline.join();
+        assert!(stats.events_processed <= 20);
+    }
+
+    #[test]
+    fn derived_metrics_dropped_when_channel_full() {
+        let (mut producer, consumer) = event_ring_with_capacity(256);
+        let bus = Arc::new(EventBus::new());
+
+        push_all(&mut producer, (0..5).map(metric));
+        producer.push(finished()).unwrap();
+
+        // Tiny derived channel that is never drained: only 2 of 5 fit.
+        let (pipeline, _derived_rx) = Pipeline::spawn_with_capacity(
+            consumer,
+            vec![Box::new(CountMetrics { seen: 0 })],
+            Arc::clone(&bus),
+            2,
+        );
         let stats = pipeline.join();
 
-        assert_eq!(stats.events_processed, 20, "all pending events drained");
+        assert_eq!(stats.derived_emitted, 2);
+        assert_eq!(stats.derived_dropped, 3);
     }
 
     #[test]
