@@ -1,11 +1,13 @@
 //! Core types, protocol, and ingest primitives for Emry.
 
+pub mod bus;
 pub mod error;
 pub mod mode;
 pub mod registry;
 pub mod ring;
 pub mod types;
 
+pub use bus::EventBus;
 pub use error::EmryError;
 pub use mode::{DeployEnv, DeployMode, ParseDeployModeError};
 pub use registry::{MetricRegistry, MAX_METRICS};
