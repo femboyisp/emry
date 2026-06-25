@@ -243,6 +243,12 @@ name = "emry-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crossbeam-channel",
+ "emry-core",
+ "emry-engine",
+ "emry-ingest",
+ "emry-store",
+ "emry-tui",
 ]
 
 [[package]]

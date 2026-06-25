@@ -32,7 +32,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for step in 0..2000u64 {
             #[allow(clippy::cast_precision_loss)]
             let base = 2.0 / (1.0 + step as f64 * 0.005);
-            let value = if step % 400 == 399 { base * 20.0 } else { base };
+            // Modest 3x spikes: visible as anomalies without flattening the
+            // baseline curve under a linear y-axis.
+            let value = if step % 400 == 399 { base * 3.0 } else { base };
             run.emit(&[(loss, value), (lr, 1e-3)]);
             std::thread::sleep(Duration::from_millis(10));
         }
