@@ -17,6 +17,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Gentle observability for long training runs.
@@ -147,6 +148,11 @@ fn cmd_demo(steps: u64) -> Result<(), Box<dyn Error>> {
 }
 
 /// `emry watch PATH` — tail a run directory's `metrics.jsonl` into the dashboard.
+///
+/// Metric labels are seeded from the initial poll. Metrics that first appear
+/// only after the dashboard starts render with the `m{id}` fallback name until a
+/// name-table protocol exists (a future `MetricRegistered` event); in practice
+/// metrics are registered at run start, so they are present in the first poll.
 fn cmd_watch(path: &Path) -> Result<(), Box<dyn Error>> {
     let metrics = if path.is_dir() {
         path.join(emry_store::METRICS_FILE)
@@ -163,14 +169,26 @@ fn cmd_watch(path: &Path) -> Result<(), Box<dyn Error>> {
     for event in initial {
         let _ = tx.try_send(event);
     }
-    std::thread::spawn(move || loop {
-        for event in tailer.poll().unwrap_or_default() {
-            let _ = tx.try_send(event);
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let poller = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                for event in tailer.poll().unwrap_or_default() {
+                    if tx.try_send(event).is_err() {
+                        // Full: drop and continue. Disconnected: receiver gone —
+                        // the loop ends on the next stop check anyway.
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        })
+    };
 
-    run_dashboard(&rx, &labels)
+    let result = run_dashboard(&rx, &labels);
+    stop.store(true, Ordering::Release);
+    let _ = poller.join();
+    result
 }
 
 /// `emry tui` — attach to a run directory (`--run-dir`) or a socket (`--socket`).
@@ -186,6 +204,9 @@ fn cmd_tui(run_dir: Option<&Path>, socket: Option<&Path>) -> Result<(), Box<dyn 
 fn cmd_socket_tui(sock: &Path) -> Result<(), Box<dyn Error>> {
     let stream = socket::connect(sock)?;
     let (tx, rx) = bounded::<Event>(8192);
+    // Detached: this thread parks in the blocking `read_frame`, which a join
+    // could not interrupt once the sender goes quiet. It is not a busy loop, and
+    // the OS reaps it when the process exits after the dashboard returns.
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         while let Ok(Some(event)) = read_frame(&mut reader) {
@@ -219,18 +240,32 @@ fn cmd_engine(
         run_dir.display()
     );
 
-    // Persist every received event to the audit log; stop when the training
-    // process signals completion.
-    let stop = AtomicBool::new(false);
-    socket::serve(&listener, &stop, |event| {
-        let finished = matches!(event, Event::RunFinished { .. });
-        sink.write_event(event);
-        if finished {
-            stop.store(true, Ordering::Release);
+    // One training run per engine invocation: accept its connection and drain
+    // it. Stop on RunFinished (so we don't wait for the peer to also close) or
+    // on EOF (handles a peer that disconnected without finishing). Whatever
+    // happens, flush the sink before returning.
+    let (stream, _addr) = listener.accept()?;
+    let mut reader = BufReader::new(stream);
+    let mut read_result = Ok(());
+    loop {
+        match read_frame(&mut reader) {
+            Ok(Some(event)) => {
+                let finished = matches!(event, Event::RunFinished { .. });
+                sink.write_event(event);
+                if finished {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(err) => {
+                read_result = Err(err);
+                break;
+            }
         }
-    })?;
+    }
     sink.finish()?;
     let _ = std::fs::remove_file(socket_path);
+    read_result?;
     Ok(())
 }
 
