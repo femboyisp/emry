@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.4,<2"]
+build-backend = "maturin"
 
 [project]
 name = "emry"
@@ -29,9 +29,9 @@ dev = [
 ]
 # Sidecar mode (streaming events to `emry engine` over a socket) needs msgpack.
 socket = ["msgpack>=1.0"]
-
-[tool.setuptools.packages.find]
-where = ["python"]
+# Tensor coercion is duck-typed (no hard torch import); this extra is a
+# convenience for `pip install emry[torch]`.
+torch = ["torch"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
