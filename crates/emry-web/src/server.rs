@@ -9,10 +9,11 @@
 //! connection ticks at 10 Hz and sends the current snapshot. Throttling here (not
 //! per-event) keeps the browser update rate bounded regardless of emit rate.
 
+use crate::baseline::Baseline;
 use crate::state::WebState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Json};
 use axum::routing::get;
 use axum::Router;
 use crossbeam_channel::Receiver;
@@ -28,16 +29,36 @@ pub const PUSH_INTERVAL: Duration = Duration::from_millis(100);
 /// event-draining task).
 pub type SharedState = Arc<Mutex<WebState>>;
 
+/// Application state shared across routes: the live dashboard state plus an
+/// optional, immutable comparison baseline (served once over `/baseline`).
+#[derive(Clone)]
+pub struct AppState {
+    /// Live dashboard state, drained from the event bus.
+    pub live: SharedState,
+    /// Comparison run series (empty when no `--compare` baseline is loaded).
+    pub baseline: Arc<Baseline>,
+}
+
 const INDEX_HTML: &str = include_str!("index.html");
 
-/// Builds the router over a shared state (no event source wired — for testing
-/// routes and for [`serve`] to drive).
+/// Builds the router over a shared state with no comparison baseline (for
+/// testing routes and for [`serve`] to drive).
 pub fn app(state: SharedState) -> Router {
+    app_with_baseline(state, Arc::new(Baseline::default()))
+}
+
+/// Builds the router over a shared state and a comparison `baseline` exposed at
+/// `/baseline`.
+pub fn app_with_baseline(state: SharedState, baseline: Arc<Baseline>) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/healthz", get(healthz))
+        .route("/baseline", get(baseline_handler))
         .route("/ws", get(ws_handler))
-        .with_state(state)
+        .with_state(AppState {
+            live: state,
+            baseline,
+        })
 }
 
 async fn index() -> Html<&'static str> {
@@ -48,8 +69,12 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<SharedState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws_loop(socket, state))
+async fn baseline_handler(State(state): State<AppState>) -> Json<Baseline> {
+    Json((*state.baseline).clone())
+}
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| ws_loop(socket, state.live))
 }
 
 async fn ws_loop(mut socket: WebSocket, state: SharedState) {
@@ -132,6 +157,23 @@ pub async fn serve_with_labels(
     axum::serve(listener, app(state)).await
 }
 
+/// Like [`serve_with_labels`], but also serves a comparison `baseline` (a prior
+/// run's series) at `/baseline` for the dashboard's dashed overlay.
+///
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if the address cannot be bound or serving fails.
+pub async fn serve_with_baseline(
+    addr: SocketAddr,
+    events: Receiver<Event>,
+    labels: &[(MetricId, &str)],
+    baseline: Baseline,
+) -> std::io::Result<()> {
+    let state = spawn_state_with_labels(events, labels);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app_with_baseline(state, Arc::new(baseline))).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +229,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn baseline_route_serves_loaded_series() {
+        use crate::baseline::{Baseline, BaselineSeries};
+        let baseline = Baseline {
+            metrics: vec![BaselineSeries {
+                label: "loss".into(),
+                steps: vec![0, 1],
+                values: vec![1.0, 0.5],
+            }],
+        };
+        let resp = app_with_baseline(shared(), Arc::new(baseline))
+            .oneshot(
+                Request::builder()
+                    .uri("/baseline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json = std::str::from_utf8(&body).unwrap();
+        assert!(json.contains("\"loss\"") && json.contains("\"values\""));
+    }
+
+    #[tokio::test]
+    async fn baseline_route_empty_by_default() {
+        let resp = app(shared())
+            .oneshot(
+                Request::builder()
+                    .uri("/baseline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), r#"{"metrics":[]}"#);
     }
 
     #[test]

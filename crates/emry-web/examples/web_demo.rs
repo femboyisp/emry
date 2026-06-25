@@ -55,13 +55,35 @@ async fn main() {
         }
     });
 
+    // Write a synthetic "previous run" metrics.jsonl, then load it as the
+    // comparison baseline so the dashboard overlays it as a dashed amber line.
+    let baseline_path = std::env::temp_dir().join("emry-web-demo-baseline.jsonl");
+    write_baseline(&baseline_path);
+    let baseline = emry_web::load_baseline(&baseline_path).expect("load baseline");
+
     println!("serving on http://127.0.0.1:8788");
     let labels = [
         (MetricId(0), "loss"),
         (MetricId(1), "lr"),
         (MetricId(2), "loss_ema"),
     ];
-    emry_web::serve_with_labels("127.0.0.1:8788".parse().unwrap(), sub, &labels)
+    emry_web::serve_with_baseline("127.0.0.1:8788".parse().unwrap(), sub, &labels, baseline)
         .await
         .unwrap();
+}
+
+/// Writes a synthetic prior run whose loss decays a touch slower than the live
+/// run, so the dashed overlay sits visibly above the live curve.
+fn write_baseline(path: &std::path::Path) {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).expect("create baseline file");
+    for step in (0..100_000u64).step_by(50) {
+        #[allow(clippy::cast_precision_loss)]
+        let loss = 2.2 / (1.0 + step as f64 * 0.008);
+        writeln!(
+            f,
+            r#"{{"step":{step},"epoch":0,"phase":"TRAIN","values":{{"loss":{loss},"loss_ema":{loss}}}}}"#
+        )
+        .expect("write baseline row");
+    }
 }
