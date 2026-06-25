@@ -1,13 +1,6 @@
 //! Terminal dashboard (ratatui).
 
+pub mod chart;
+
+pub use chart::{downsample_minmax, render_braille};
 pub use emry_core::Phase;
-
-#[cfg(test)]
-mod tests {
-    use super::Phase;
-
-    #[test]
-    fn phase_reexport_matches_core() {
-        assert!(matches!(Phase::Eval, Phase::Eval));
-    }
-}
