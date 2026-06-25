@@ -176,6 +176,7 @@ mod tests {
 
     /// Table-driven coverage of every resolution branch.
     #[test]
+    #[allow(clippy::too_many_lines)] // one long case table, not complex logic
     fn resolve_precedence_and_auto_detect_branches() {
         struct Case {
             name: &'static str,
