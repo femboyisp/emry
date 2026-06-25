@@ -7,7 +7,7 @@
 
 use emry_core::{Event, MetricId, Severity};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 const DEFAULT_HISTORY: usize = 2048;
 const DEFAULT_ALERTS: usize = 16;
@@ -21,8 +21,8 @@ pub struct WebMetric {
     pub label: String,
     /// Most recent value.
     pub latest: f64,
-    /// Recent values, oldest first (capped).
-    pub history: Vec<f64>,
+    /// Recent values, oldest first (capped FIFO). Serializes as a JSON array.
+    pub history: VecDeque<f64>,
 }
 
 /// An alert surfaced to the dashboard.
@@ -49,8 +49,8 @@ pub struct WebState {
     pub finished: bool,
     /// Tracked metrics in first-seen order.
     pub metrics: Vec<WebMetric>,
-    /// Recent alerts (most recent last, capped).
-    pub alerts: Vec<WebAlert>,
+    /// Recent alerts (most recent last, capped FIFO).
+    pub alerts: VecDeque<WebAlert>,
     #[serde(skip)]
     labels: BTreeMap<u16, String>,
 }
@@ -84,13 +84,13 @@ impl WebState {
             }
             Event::PhaseChange(phase) => self.phase = phase_str(*phase),
             Event::Alert(alert) => {
-                self.alerts.push(WebAlert {
+                self.alerts.push_back(WebAlert {
                     severity: severity_str(alert.severity),
                     message: alert.message.clone(),
                     step: alert.step,
                 });
                 if self.alerts.len() > DEFAULT_ALERTS {
-                    self.alerts.remove(0);
+                    self.alerts.pop_front();
                 }
             }
             Event::RunFinished { .. } => self.finished = true,
@@ -107,14 +107,14 @@ impl WebState {
                 id: id.index(),
                 label,
                 latest: value,
-                history: Vec::new(),
+                history: VecDeque::new(),
             });
             self.metrics.last_mut().expect("just pushed")
         };
         view.latest = value;
-        view.history.push(value);
+        view.history.push_back(value);
         if view.history.len() > DEFAULT_HISTORY {
-            view.history.remove(0);
+            view.history.pop_front();
         }
     }
 
@@ -163,7 +163,10 @@ mod tests {
         assert_eq!(s.step, 1);
         assert_eq!(s.metrics[0].label, "loss");
         assert_eq!(s.metrics[0].latest, 0.5);
-        assert_eq!(s.metrics[0].history, vec![1.0, 0.5]);
+        assert_eq!(
+            s.metrics[0].history.iter().copied().collect::<Vec<_>>(),
+            vec![1.0, 0.5]
+        );
     }
 
     #[test]
@@ -216,7 +219,7 @@ mod tests {
         }
         assert_eq!(s.alerts.len(), DEFAULT_ALERTS);
         assert_eq!(
-            s.alerts.last().unwrap().message,
+            s.alerts.back().unwrap().message,
             format!("a{}", DEFAULT_ALERTS + 4)
         );
     }

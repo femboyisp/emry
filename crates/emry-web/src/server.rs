@@ -54,6 +54,10 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<SharedState>) -> i
 
 async fn ws_loop(mut socket: WebSocket, state: SharedState) {
     let mut ticker = tokio::time::interval(PUSH_INTERVAL);
+    // Skip (not burst) missed ticks: if a snapshot serialization runs long, we
+    // resume at the next interval instead of firing a rapid catch-up burst —
+    // keeping the push rate at ≤10 Hz as intended.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
         let snapshot = snapshot_json(&state);
@@ -74,6 +78,10 @@ fn snapshot_json(state: &SharedState) -> String {
 
 /// Spawns a task draining `events` into a fresh shared [`WebState`] and returns
 /// it. The caller serves the [`app`] over the returned state.
+///
+/// The drain thread blocks on `recv()` and exits when the bus `Sender` is
+/// dropped (i.e. the run ends). For `emry web`, the server runs for the process
+/// lifetime, so this is the natural shutdown; there is no separate stop signal.
 #[must_use]
 pub fn spawn_state(events: Receiver<Event>) -> SharedState {
     let state: SharedState = Arc::new(Mutex::new(WebState::default()));
@@ -150,7 +158,7 @@ mod tests {
 
     #[test]
     fn snapshot_reflects_drained_events() {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = crossbeam_channel::bounded(256);
         let state = spawn_state(rx);
         tx.send(Event::MetricsBatch {
             step: 3,
