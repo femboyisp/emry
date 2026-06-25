@@ -14,3 +14,4 @@ workspace = true
 emry-core = { path = "../emry-core" }
 serde.workspace = true
 serde_json.workspace = true
+crossbeam-channel.workspace = true

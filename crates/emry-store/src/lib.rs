@@ -1,15 +1,11 @@
 //! Persistence: JSONL, Parquet, rotation.
 
-pub use emry_core::EmryError;
+pub mod sink;
+pub mod writer;
 
 #[cfg(test)]
-mod tests {
-    use super::EmryError;
-    use std::io::Error as IoError;
+mod test_util;
 
-    #[test]
-    fn error_type_is_shared() {
-        let err = EmryError::Io(IoError::other("disk"));
-        assert!(err.to_string().contains("disk"));
-    }
-}
+pub use emry_core::EmryError;
+pub use sink::{JsonlSink, FLUSH_EVERY, FLUSH_INTERVAL};
+pub use writer::{JsonlWriter, EVENTS_FILE, METRICS_FILE};
