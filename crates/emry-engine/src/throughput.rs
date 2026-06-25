@@ -54,12 +54,25 @@ impl Throughput {
         }
     }
 
+    /// Updates the known total step count (e.g. when a run is extended past its
+    /// originally declared length). Affects subsequent `eta_secs` estimates.
+    pub fn set_total_steps(&mut self, total_steps: Option<u64>) {
+        self.total_steps = total_steps;
+    }
+
     /// Records a step observed at `now_secs` (monotonic seconds), returning the
     /// derived metrics. Pure: no clock access, so callers/tests control time.
     ///
     /// Only step *advances* are recorded; a repeated or out-of-order step is
     /// ignored so multiple metrics logged at the same step don't skew the rate.
-    #[allow(clippy::cast_precision_loss)] // step counts and durations fit f64 exactly for any real run
+    ///
+    /// `now_secs` values must share one time origin. Do **not** mix direct
+    /// `observe` calls with [`Processor::on_event`] on the same instance — the
+    /// live path stamps seconds-since-construction, and mixing origins corrupts
+    /// the window.
+    // Both `now_secs` (a duration) and the step delta fit f64 exactly for any
+    // realistic run (steps < 2^53; sub-ns precision loss is unavoidable anyway).
+    #[allow(clippy::cast_precision_loss)]
     pub fn observe(&mut self, step: u64, now_secs: f64) -> Vec<DerivedMetric> {
         if self.last_step.is_some_and(|last| step <= last) {
             return Vec::new();
@@ -174,7 +187,8 @@ mod tests {
         let mut t = Throughput::new(None, 2);
         t.observe(0, 0.0);
         t.observe(10, 1.0);
-        // Window now holds the last two: (1.0, 10) and (2.0, 30) -> 20/s.
+        // Capacity 2: this third sample evicts (0.0, 0), leaving the window
+        // [(1.0, 10), (2.0, 30)] -> (30-10)/(2.0-1.0) = 20/s.
         let out = t.observe(30, 2.0);
         approx(*named(&out, "steps_per_sec").unwrap(), 20.0);
     }
@@ -185,6 +199,19 @@ mod tests {
         t.observe(0, 0.0);
         let out = t.observe(20, 1.0); // past total
         approx(*named(&out, "eta_secs").unwrap(), 0.0);
+    }
+
+    #[test]
+    fn set_total_steps_updates_eta() {
+        let mut t = Throughput::new(None, 8);
+        t.observe(0, 0.0);
+        // No total yet -> no ETA.
+        let out = t.observe(10, 1.0);
+        assert!(named(&out, "eta_secs").is_none());
+        // Extend the run: now ETA appears. 10/s, (210-20) remaining = 19s.
+        t.set_total_steps(Some(210));
+        let out = t.observe(20, 2.0);
+        approx(*named(&out, "eta_secs").unwrap(), 19.0);
     }
 
     #[test]
