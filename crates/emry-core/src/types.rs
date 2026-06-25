@@ -24,7 +24,7 @@ pub enum Phase {
 /// Metrics are registered once at run start and addressed by this compact
 /// `u16` on the hot path so `emit()` avoids string hashing. The interning
 /// table itself lives in the metric registry (EMRY-003); this newtype is the
-/// shared wire-level handle. A maximum of 65 535 distinct metrics is supported.
+/// shared wire-level handle. A maximum of 65 536 distinct metrics is supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct MetricId(pub u16);
@@ -99,6 +99,17 @@ pub struct RunMeta {
 /// every variant (struct, tuple, and newtype alike) roundtrips through JSON and
 /// msgpack on one line. Hot-path metric emission uses [`Event::MetricsBatch`];
 /// [`Event::Metric`] covers single dynamic values.
+///
+/// # Serialization
+///
+/// - **msgpack** (sidecar wire protocol, EMRY-024): adjacently-tagged enums only
+///   roundtrip when structs are encoded as maps, so producers must use
+///   `rmp_serde::Serializer::with_struct_map`. The default compact (sequence)
+///   encoding from `rmp_serde::to_vec` will **not** deserialize back.
+/// - **JSON** (`events.jsonl`): metric `value`s must be finite. JSON cannot
+///   represent `NaN`/`Inf`; `serde_json` silently encodes them as `null`
+///   (lossy), so non-finite values must be caught before emit and surfaced via
+///   [`Event::Alert`], never written as raw metric values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Event {
@@ -294,6 +305,92 @@ mod tests {
     fn event_uses_adjacent_tag_layout() {
         let json = serde_json::to_string(&Event::PhaseChange(Phase::Eval)).unwrap();
         assert_eq!(json, r#"{"type":"PHASE_CHANGE","data":"EVAL"}"#);
+    }
+
+    /// `events.jsonl` is an append-only audit format read by external tools, so
+    /// the `"type"` tag of every variant is pinned to guard against accidental
+    /// wire-format changes from a variant rename.
+    #[test]
+    fn event_type_tags_are_stable() {
+        fn tag(event: &Event) -> String {
+            let value: serde_json::Value = serde_json::to_value(event).unwrap();
+            value["type"].as_str().unwrap().to_owned()
+        }
+        assert_eq!(
+            tag(&Event::Metric {
+                id: MetricId(0),
+                value: 0.0,
+                step: 0,
+                epoch: 0,
+                phase: Phase::Train,
+            }),
+            "METRIC"
+        );
+        assert_eq!(
+            tag(&Event::MetricsBatch {
+                step: 0,
+                epoch: 0,
+                phase: Phase::Train,
+                values: vec![],
+            }),
+            "METRICS_BATCH"
+        );
+        assert_eq!(tag(&Event::PhaseChange(Phase::Train)), "PHASE_CHANGE");
+        assert_eq!(
+            tag(&Event::Checkpoint {
+                path: String::new(),
+                step: 0
+            }),
+            "CHECKPOINT"
+        );
+        assert_eq!(
+            tag(&Event::ConfigPatch(serde_json::Value::Null)),
+            "CONFIG_PATCH"
+        );
+        assert_eq!(
+            tag(&Event::Alert(AlertRecord {
+                severity: Severity::Info,
+                message: String::new(),
+                step: None,
+            })),
+            "ALERT"
+        );
+        assert_eq!(
+            tag(&Event::RunStarted(RunMeta {
+                run_id: Uuid::nil(),
+                project: String::new(),
+                config: serde_json::Value::Null,
+                start_time_secs: 0.0,
+            })),
+            "RUN_STARTED"
+        );
+        assert_eq!(
+            tag(&Event::RunFinished {
+                duration_secs: 0.0,
+                reason: FinishReason::Completed,
+            }),
+            "RUN_FINISHED"
+        );
+    }
+
+    /// Pins the lossy JSON behaviour for non-finite metric values: `serde_json`
+    /// silently encodes `NaN`/`Inf` as `null` rather than erroring. This is why
+    /// non-finite values must be caught before emit and surfaced via `Alert` —
+    /// otherwise the audit log records a meaningless `null`.
+    #[test]
+    fn json_encodes_non_finite_metric_values_as_null() {
+        let nan = Event::Metric {
+            id: MetricId(0),
+            value: f64::NAN,
+            step: 1,
+            epoch: 0,
+            phase: Phase::Train,
+        };
+        let json = serde_json::to_string(&nan).unwrap();
+        assert!(
+            json.contains("\"value\":null"),
+            "lossy NaN encoding: {json}"
+        );
     }
 
     /// The sidecar wire protocol (EMRY-024) frames events as msgpack. Adjacently
