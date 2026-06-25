@@ -128,12 +128,21 @@
       let selected = null; // selected metric label
       let latestState = null;
 
-      function drawChart(metric) {
+      // Per-phase background tints (TRAIN = none).
+      const PHASE_TINT = {
+        EVAL: "rgba(217, 154, 74, 0.10)",
+        TEST: "rgba(196, 113, 74, 0.12)",
+        WARMUP: "rgba(107, 101, 96, 0.12)",
+        CHECKPOINT: "rgba(107, 101, 96, 0.18)",
+      };
+
+      function drawChart(metric, state) {
         const w = els.canvas.width;
         const h = els.canvas.height;
         ctx.clearRect(0, 0, w, h);
         if (!metric || !metric.history || metric.history.length === 0) return;
         const data = metric.history.slice(-WINDOW);
+        const steps = (metric.steps || []).slice(-WINDOW);
         let min = Infinity,
           max = -Infinity;
         for (const v of data) {
@@ -145,9 +154,42 @@
         if (!Number.isFinite(min)) return;
         const span = max - min || 1;
         const pad = 24;
-        const x = (i) => pad + (i / Math.max(1, data.length - 1)) * (w - 2 * pad);
+        // Step-based x-axis over the visible window.
+        const s0 = steps.length ? steps[0] : 0;
+        const s1 = steps.length ? steps[steps.length - 1] : data.length - 1;
+        const stepSpan = s1 - s0 || 1;
+        const xStep = (st) => pad + ((st - s0) / stepSpan) * (w - 2 * pad);
+        const xIdx = (i) => xStep(steps.length ? steps[i] : i);
         const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
-        // baseline + top gridlines
+
+        // Phase background bands: shade [span.step, next.step) by phase.
+        const phases = (state && state.phases) || [];
+        for (let p = 0; p < phases.length; p++) {
+          const tint = PHASE_TINT[phases[p].phase];
+          if (!tint) continue;
+          const from = Math.max(s0, phases[p].step);
+          const to = p + 1 < phases.length ? phases[p + 1].step : s1;
+          if (to < s0 || from > s1) continue;
+          ctx.fillStyle = tint;
+          ctx.fillRect(xStep(from), pad, xStep(Math.min(to, s1)) - xStep(from), h - 2 * pad);
+        }
+
+        // Checkpoint markers: dashed vertical lines.
+        const ckpts = (state && state.checkpoints) || [];
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = "rgba(245, 240, 232, 0.35)";
+        for (const st of ckpts) {
+          if (st < s0 || st > s1) continue;
+          const cx = xStep(st);
+          ctx.beginPath();
+          ctx.moveTo(cx, pad);
+          ctx.lineTo(cx, h - pad);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // min/max gridlines
         ctx.strokeStyle = C.gray;
         ctx.globalAlpha = 0.4;
         ctx.beginPath();
@@ -161,14 +203,14 @@
         ctx.strokeStyle = C.terracotta;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+        data.forEach((v, i) => (i ? ctx.lineTo(xIdx(i), y(v)) : ctx.moveTo(xIdx(i), y(v))));
         ctx.stroke();
         // current-value dot at the latest point
         const lastV = data[data.length - 1];
         if (Number.isFinite(lastV)) {
           ctx.fillStyle = C.terracotta;
           ctx.beginPath();
-          ctx.arc(x(data.length - 1), y(lastV), 3, 0, Math.PI * 2);
+          ctx.arc(xIdx(data.length - 1), y(lastV), 3, 0, Math.PI * 2);
           ctx.fill();
         }
         // y-axis value labels with a panel-colored backing so they don't clash
@@ -213,7 +255,7 @@
         els.chartTitle.textContent = metric
           ? `${metric.label} (latest ${Number(metric.latest).toPrecision(5)})`
           : "—";
-        drawChart(metric);
+        drawChart(metric, s);
         const a = s.alerts && s.alerts.length ? s.alerts[s.alerts.length - 1] : null;
         els.alert.className = "alert" + (a ? " " + a.severity : "");
         els.alert.textContent = a ? a.message : "no alerts — all calm";
