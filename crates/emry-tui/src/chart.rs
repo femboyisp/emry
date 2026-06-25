@@ -21,7 +21,10 @@ pub fn downsample_minmax(data: &[f64], buckets: usize) -> Vec<(f64, f64)> {
         return Vec::new();
     }
     if data.len() <= buckets {
-        return data.iter().map(|&v| (v, v)).collect();
+        return data
+            .iter()
+            .map(|&v| if v.is_finite() { (v, v) } else { (0.0, 0.0) })
+            .collect();
     }
     (0..buckets)
         .map(|b| {
@@ -86,11 +89,19 @@ pub fn render_braille(data: &[f64], width: usize, height: usize) -> Vec<String> 
         return blank();
     }
 
+    // Normalise against the actual finite data range, not the bucket outputs:
+    // an all-non-finite bucket reports a (0,0) sentinel that would otherwise
+    // distort the scale.
     let mut g_min = f64::INFINITY;
     let mut g_max = f64::NEG_INFINITY;
-    for &(min, max) in &columns {
-        g_min = g_min.min(min);
-        g_max = g_max.max(max);
+    for &v in data {
+        if v.is_finite() {
+            g_min = g_min.min(v);
+            g_max = g_max.max(v);
+        }
+    }
+    if !g_min.is_finite() {
+        return blank(); // no finite data to plot
     }
     let span = if (g_max - g_min).abs() < f64::EPSILON {
         1.0
@@ -104,8 +115,11 @@ pub fn render_braille(data: &[f64], width: usize, height: usize) -> Vec<String> 
         let cell_col = dot_col / 2;
         let sub_col = dot_col % 2;
         // Map values to dot rows measured from the bottom (0 = lowest value).
-        let y_lo = (((min - g_min) / span) * top_dot).round() as usize;
-        let y_hi = (((max - g_min) / span) * top_dot).round() as usize;
+        // Clamp to the grid: a (0,0) sentinel column (all-non-finite bucket) can
+        // fall outside the data range, which would otherwise underflow from_top.
+        let to_row = |v: f64| (((v - g_min) / span) * top_dot).round().clamp(0.0, top_dot) as usize;
+        let y_lo = to_row(min);
+        let y_hi = to_row(max);
         for y in y_lo..=y_hi {
             let from_top = (dot_h - 1) - y;
             cells[from_top / 4][cell_col] |= dot_bit(sub_col, from_top % 4);
@@ -202,6 +216,32 @@ mod tests {
         assert!(rows[0].chars().any(|c| c != '\u{2800}' && c != ' '));
         // Bottom row is non-blank too (the baseline sits at the bottom).
         assert!(rows[3].chars().any(|c| c != '\u{2800}' && c != ' '));
+    }
+
+    #[test]
+    fn short_series_filters_non_finite() {
+        // len <= buckets short-circuit path must also reject non-finite.
+        let out = downsample_minmax(&[1.0, f64::NAN, f64::INFINITY], 10);
+        assert_eq!(out, vec![(1.0, 1.0), (0.0, 0.0), (0.0, 0.0)]);
+    }
+
+    #[test]
+    fn render_normalizes_against_data_not_sentinels() {
+        // Large finite values plus an all-NaN region must not be rescaled by the
+        // (0,0) sentinel, and must not panic when 0 is outside the data range.
+        let mut data = vec![1_000_000.0_f64; 200];
+        for v in data.iter_mut().take(20) {
+            *v = f64::NAN;
+        }
+        let rows = render_braille(&data, 20, 4);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| r.chars().count() == 20));
+    }
+
+    #[test]
+    fn render_all_non_finite_is_blank() {
+        let rows = render_braille(&[f64::NAN, f64::INFINITY], 10, 3);
+        assert!(rows.iter().all(|r| r.chars().all(|c| c == ' ')));
     }
 
     #[test]
