@@ -30,6 +30,7 @@ crossbeam-channel = "0.5"
 rtrb = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "fs"] }
 clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

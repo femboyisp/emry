@@ -12,3 +12,10 @@ workspace = true
 
 [dependencies]
 emry-core = { path = "../emry-core" }
+crossbeam-channel.workspace = true
+ratatui.workspace = true
+
+[dev-dependencies]
+emry-engine = { path = "../emry-engine" }
+uuid.workspace = true
+serde_json.workspace = true
