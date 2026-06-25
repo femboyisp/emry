@@ -175,8 +175,11 @@ def _default_backend(
     mode: object,
     log_dir: Optional[str],
 ) -> Backend:
-    """Selects the backend: the native Rust engine in `embedded` mode (when the
-    extension is built), else the pure-Python JSONL writer."""
+    """Selects the backend by deploy mode: native Rust engine for `embedded`
+    (when built), the sidecar socket client for `sidecar` (when an engine is
+    reachable), else the pure-Python JSONL writer. Each falls back to JSONL."""
+    import os
+
     from emry.mode import DeployMode, detect
 
     if isinstance(mode, DeployMode):
@@ -195,6 +198,18 @@ def _default_backend(
         native = try_create(project, config=config, metrics=metrics, mode=resolved, log_dir=log_dir)
         if native is not None:
             return native
+
+    if resolved is DeployMode.SIDECAR:
+        socket_path = os.environ.get("EMRY_SOCKET")
+        if socket_path:
+            from emry.socket_backend import SocketBackend
+
+            try:
+                return SocketBackend.connect(
+                    project, config=config, metrics=metrics, socket_path=socket_path
+                )
+            except OSError:
+                pass  # no engine listening — fall back to file rather than fail
 
     from emry.jsonl_backend import JsonlBackend
 
