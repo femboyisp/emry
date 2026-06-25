@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for step in 0..200u64 {
         #[allow(clippy::cast_precision_loss)]
         let base = 2.0 / (1.0 + step as f64 * 0.05);
-        let value = if step == 120 { base * 25.0 } else { base };
+        let value = if step == 120 { base * 3.0 } else { base };
         run.emit(&[(loss, value), (lr, 1e-3)]);
     }
 
