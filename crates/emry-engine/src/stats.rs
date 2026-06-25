@@ -232,6 +232,7 @@ mod tests {
         assert_eq!(last[0].name, "loss_mean");
         assert_eq!(last[1].name, "loss_std");
         approx(last[0].value, 5.0);
+        approx(last[1].value, (32.0_f64 / 7.0).sqrt());
     }
 
     #[test]
