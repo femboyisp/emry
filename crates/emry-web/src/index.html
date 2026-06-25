@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emry</title>
+    <style>
+      :root {
+        --cream: #f5f0e8;
+        --terracotta: #c4714a;
+        --warm-gray: #6b6560;
+      }
+      body {
+        margin: 0;
+        font-family: ui-monospace, monospace;
+        background: #1a1714;
+        color: var(--cream);
+      }
+      header {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--warm-gray);
+        color: var(--terracotta);
+        font-weight: bold;
+      }
+      #status {
+        color: var(--warm-gray);
+        font-weight: normal;
+      }
+      pre {
+        padding: 1rem;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <header>Emry <span id="status">connecting…</span></header>
+    <pre id="state">waiting for data…</pre>
+    <script>
+      // Minimal live view: render the streamed state JSON. The uPlot charts
+      // land in EMRY-041; this confirms the WebSocket stream end to end.
+      const status = document.getElementById("status");
+      const out = document.getElementById("state");
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = () => (status.textContent = "live");
+      ws.onclose = () => (status.textContent = "disconnected");
+      ws.onmessage = (ev) => {
+        const s = JSON.parse(ev.data);
+        const lines = [
+          `${s.project || "(run)"}  step ${s.step}  ${s.phase || ""}  ${s.finished ? "finished" : "running"}`,
+          "",
+          ...(s.metrics || []).map((m) => `${m.label} = ${m.latest}`),
+        ];
+        if (s.alerts && s.alerts.length) {
+          lines.push("", `! ${s.alerts[s.alerts.length - 1].message}`);
+        }
+        out.textContent = lines.join("\n");
+      };
+    </script>
+  </body>
+</html>

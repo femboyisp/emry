@@ -1,9 +1,7 @@
 //! Web dashboard (axum + WebSocket + uPlot).
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn crate_compiles() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+pub mod server;
+pub mod state;
+
+pub use server::{app, serve, spawn_state, SharedState, PUSH_INTERVAL};
+pub use state::{WebAlert, WebMetric, WebState};
