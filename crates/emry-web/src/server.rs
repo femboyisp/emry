@@ -142,7 +142,9 @@ pub async fn serve(addr: SocketAddr, events: Receiver<Event>) -> std::io::Result
     serve_with_labels(addr, events, &[]).await
 }
 
-/// Like [`serve`], but seeds metric `labels` for real metric names.
+/// Like [`serve`], but seeds metric `labels` for real metric names. Serves no
+/// comparison baseline (`/baseline` returns an empty set); use
+/// [`serve_with_baseline`] to add one.
 ///
 /// # Errors
 ///

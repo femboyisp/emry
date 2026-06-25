@@ -113,6 +113,23 @@ mod tests {
     }
 
     #[test]
+    fn accepts_a_run_directory() {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("emry-baseline-dir-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("metrics.jsonl"),
+            "{\"step\":0,\"epoch\":0,\"phase\":\"TRAIN\",\"values\":{\"loss\":0.5}}\n",
+        )
+        .unwrap();
+        let b = load_baseline(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(b.metrics[0].label, "loss");
+        assert_eq!(b.metrics[0].values, vec![0.5]);
+    }
+
+    #[test]
     fn missing_file_errors() {
         assert!(load_baseline(Path::new("/no/such/emry/metrics.jsonl")).is_err());
     }
