@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 emry-core = { path = "../emry-core" }
+crossbeam-channel.workspace = true
