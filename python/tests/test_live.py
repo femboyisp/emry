@@ -23,6 +23,9 @@ from emry import live, run
         ("auto", False, False, False, []),
         # EMRY_LIVE_FORCE flips SSH back to TUI
         ("auto", True, False, True, ["tui"]),
+        # SSH + local TTY still defaults to web (force flips it to tui)
+        ("auto", True, True, False, ["web"]),
+        ("auto", True, True, True, ["tui"]),
         ("bogus", False, True, False, []),
     ],
 )

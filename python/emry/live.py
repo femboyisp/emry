@@ -81,6 +81,12 @@ def spawn_observers(
                 subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                     cmd,
                     start_new_session=True,
+                    # Detach stdio so the observer's output never bleeds into the
+                    # training process's terminal/log. (A co-located local TUI
+                    # can't share the training terminal — over SSH the web
+                    # dashboard, EMRY-044, is the better observer.)
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
             )
         except FileNotFoundError:
