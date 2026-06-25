@@ -19,6 +19,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut run = Engine::start(cfg)?;
     let loss = run.register("loss");
     let lr = run.register("lr");
+    // Pre-register the derived series so the dashboard can label them (the bus
+    // carries MetricIds; the engine assigns these names the same ids).
+    let loss_ema = run.register("loss_ema");
+    let lr_ema = run.register("lr_ema");
+    let sps = run.register("steps_per_sec");
+    let eta = run.register("eta_secs");
     let events = run.bus().subscribe();
 
     // Feed a synthetic loss curve from a background thread.
@@ -33,7 +39,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         run.finish().ok();
     });
 
-    let state = UiState::with_labels(&[(loss, "loss"), (lr, "lr")]);
+    let state = UiState::with_labels(&[
+        (loss, "loss"),
+        (lr, "lr"),
+        (loss_ema, "loss_ema"),
+        (lr_ema, "lr_ema"),
+        (sps, "steps_per_sec"),
+        (eta, "eta_secs"),
+    ]);
     run_terminal(&events, state)?;
     Ok(())
 }
