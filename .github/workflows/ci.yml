@@ -43,15 +43,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # maturin is the build backend, so building/installing the package
+      # compiles the native `emry._native` extension — needs the Rust toolchain.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+
+      - uses: Swatinem/rust-cache@v2
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install dev dependencies
+      - name: Install (builds the native extension via maturin)
         run: pip install -e ".[dev]"
 
       - name: Pytest with coverage
         run: pytest
+
+  wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + abi3 wheel
+        run: |
+          pip install "maturin>=1.4,<2"
+          maturin build --release --out dist
+          maturin sdist --out dist
+
+      - name: Verify the wheel installs and imports
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install --no-index --find-links dist emry
+          /tmp/wheeltest/bin/python -c "import emry, emry._native; print(emry.__version__)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emry-dist
+          path: dist/*
 
   pre-commit:
     runs-on: ubuntu-latest
