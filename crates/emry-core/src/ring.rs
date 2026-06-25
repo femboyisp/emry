@@ -18,6 +18,13 @@ use crate::types::Event;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+// The dropped counter uses `Ordering::Relaxed` deliberately. It is a standalone
+// statistic — it never guards access to other memory, so no acquire/release
+// happens-before edge is needed. Atomics are coherent and relaxed stores become
+// visible in finite time, so the consumer reliably observes the producer's
+// increments; we only require eventual visibility, not ordering. Relaxed is also
+// the cheapest option on the training hot path.
+
 /// Default ring capacity (number of in-flight events).
 pub const DEFAULT_CAPACITY: usize = 65_536;
 
