@@ -8,52 +8,208 @@
       :root {
         --cream: #f5f0e8;
         --terracotta: #c4714a;
+        --amber: #d99a4a;
         --warm-gray: #6b6560;
+        --bg: #1a1714;
+        --panel: #221e1a;
+      }
+      * {
+        box-sizing: border-box;
       }
       body {
         margin: 0;
-        font-family: ui-monospace, monospace;
-        background: #1a1714;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        background: var(--bg);
         color: var(--cream);
       }
       header {
+        display: flex;
+        gap: 1.25rem;
+        align-items: baseline;
         padding: 0.75rem 1rem;
         border-bottom: 1px solid var(--warm-gray);
+      }
+      header .project {
         color: var(--terracotta);
         font-weight: bold;
       }
-      #status {
+      header .meta {
         color: var(--warm-gray);
-        font-weight: normal;
       }
-      pre {
+      main {
         padding: 1rem;
-        white-space: pre-wrap;
+        display: grid;
+        gap: 1rem;
+      }
+      .cards {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem 1.25rem;
+      }
+      .card {
+        cursor: pointer;
+        padding: 0.25rem 0.5rem;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        color: var(--cream);
+      }
+      .card.selected {
+        border-color: var(--terracotta);
+        color: var(--terracotta);
+      }
+      .chart-wrap {
+        background: var(--panel);
+        border: 1px solid var(--warm-gray);
+        border-radius: 6px;
+        padding: 0.5rem;
+      }
+      .chart-title {
+        color: var(--terracotta);
+        margin-bottom: 0.25rem;
+        font-size: 0.9rem;
+      }
+      canvas {
+        width: 100%;
+        height: 320px;
+        display: block;
+      }
+      .alert {
+        padding: 0.5rem 1rem;
+        border-left: 3px solid var(--warm-gray);
+        color: var(--warm-gray);
+      }
+      .alert.CRITICAL {
+        border-color: var(--terracotta);
+        color: var(--terracotta);
+      }
+      .alert.WARNING {
+        border-color: var(--amber);
+        color: var(--amber);
       }
     </style>
   </head>
   <body>
-    <header>Emry <span id="status">connecting…</span></header>
-    <pre id="state">waiting for data…</pre>
+    <header>
+      <span class="project" id="project">emry</span>
+      <span class="meta" id="progress">step 0</span>
+      <span class="meta" id="phase"></span>
+      <span class="meta" id="status">connecting…</span>
+    </header>
+    <main>
+      <div class="cards" id="cards"></div>
+      <div class="chart-wrap">
+        <div class="chart-title" id="chart-title">—</div>
+        <canvas id="chart" width="900" height="320"></canvas>
+      </div>
+      <div class="alert" id="alert">no alerts — all calm</div>
+    </main>
+
     <script>
-      // Minimal live view: render the streamed state JSON. The uPlot charts
-      // land in EMRY-041; this confirms the WebSocket stream end to end.
-      const status = document.getElementById("status");
-      const out = document.getElementById("state");
-      const ws = new WebSocket(`ws://${location.host}/ws`);
-      ws.onopen = () => (status.textContent = "live");
-      ws.onclose = () => (status.textContent = "disconnected");
-      ws.onmessage = (ev) => {
-        const s = JSON.parse(ev.data);
-        const lines = [
-          `${s.project || "(run)"}  step ${s.step}  ${s.phase || ""}  ${s.finished ? "finished" : "running"}`,
-          "",
-          ...(s.metrics || []).map((m) => `${m.label} = ${m.latest}`),
-        ];
-        if (s.alerts && s.alerts.length) {
-          lines.push("", `! ${s.alerts[s.alerts.length - 1].message}`);
+      // Dependency-free, self-hosted dashboard (no CDN — respects air-gap).
+      // Renders the selected metric's recent history as a min/max-scaled line on
+      // a canvas, plus a metric selector and an alert strip, from the /ws stream.
+      const WINDOW = 600; // rolling window of points to plot
+      const C = {
+        cream: "#f5f0e8",
+        terracotta: "#c4714a",
+        gray: "#6b6560",
+      };
+      const els = {
+        project: document.getElementById("project"),
+        progress: document.getElementById("progress"),
+        phase: document.getElementById("phase"),
+        status: document.getElementById("status"),
+        cards: document.getElementById("cards"),
+        chartTitle: document.getElementById("chart-title"),
+        canvas: document.getElementById("chart"),
+        alert: document.getElementById("alert"),
+      };
+      const ctx = els.canvas.getContext("2d");
+      let selected = null; // selected metric label
+      let latestState = null;
+
+      function drawChart(metric) {
+        const w = els.canvas.width;
+        const h = els.canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        if (!metric || !metric.history || metric.history.length === 0) return;
+        const data = metric.history.slice(-WINDOW);
+        let min = Infinity,
+          max = -Infinity;
+        for (const v of data) {
+          if (Number.isFinite(v)) {
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
         }
-        out.textContent = lines.join("\n");
+        if (!Number.isFinite(min)) return;
+        const span = max - min || 1;
+        const pad = 24;
+        const x = (i) => pad + (i / Math.max(1, data.length - 1)) * (w - 2 * pad);
+        const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
+        // baseline + top gridlines
+        ctx.strokeStyle = C.gray;
+        ctx.globalAlpha = 0.4;
+        ctx.beginPath();
+        ctx.moveTo(pad, y(min));
+        ctx.lineTo(w - pad, y(min));
+        ctx.moveTo(pad, y(max));
+        ctx.lineTo(w - pad, y(max));
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        // the line
+        ctx.strokeStyle = C.terracotta;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+        ctx.stroke();
+        // axis labels
+        ctx.fillStyle = C.gray;
+        ctx.font = "11px monospace";
+        ctx.fillText(max.toPrecision(4), 2, y(max) + 4);
+        ctx.fillText(min.toPrecision(4), 2, y(min) + 4);
+      }
+
+      function renderCards(metrics) {
+        els.cards.innerHTML = "";
+        if (selected === null && metrics.length) selected = metrics[0].label;
+        for (const m of metrics) {
+          const card = document.createElement("div");
+          card.className = "card" + (m.label === selected ? " selected" : "");
+          card.textContent = `${m.label} = ${Number(m.latest).toPrecision(5)}`;
+          card.onclick = () => {
+            selected = m.label;
+            render();
+          };
+          els.cards.appendChild(card);
+        }
+      }
+
+      function render() {
+        const s = latestState;
+        if (!s) return;
+        els.project.textContent = s.project || "emry";
+        const total = s.total_steps ? `/${s.total_steps}` : "";
+        els.progress.textContent = `step ${s.step}${total}`;
+        els.phase.textContent = s.phase || "";
+        els.status.textContent = s.finished ? "finished" : "running";
+        renderCards(s.metrics || []);
+        const metric = (s.metrics || []).find((m) => m.label === selected);
+        els.chartTitle.textContent = metric
+          ? `${metric.label} (latest ${Number(metric.latest).toPrecision(5)})`
+          : "—";
+        drawChart(metric);
+        const a = s.alerts && s.alerts.length ? s.alerts[s.alerts.length - 1] : null;
+        els.alert.className = "alert" + (a ? " " + a.severity : "");
+        els.alert.textContent = a ? a.message : "no alerts — all calm";
+      }
+
+      const ws = new WebSocket(`ws://${location.host}/ws`);
+      ws.onopen = () => (els.status.textContent = "live");
+      ws.onclose = () => (els.status.textContent = "disconnected");
+      ws.onmessage = (ev) => {
+        latestState = JSON.parse(ev.data);
+        render();
       };
     </script>
   </body>
