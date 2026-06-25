@@ -22,10 +22,10 @@
 
 use crate::anomaly::AnomalyDetector;
 use emry_core::{
-    event_ring, EmryError, Event, EventBus, EventConsumer, EventProducer, FinishReason, MetricId,
-    MetricRecord, MetricRegistry, Phase, RunMeta,
+    event_ring, DeployMode, EmryError, Event, EventBus, EventConsumer, EventProducer, FinishReason,
+    MetricId, MetricRecord, MetricRegistry, Phase, RunMeta,
 };
-use emry_store::JsonlSink;
+use emry_store::{JsonlSink, RunMetaFile, Summary, CONFIG_FILE, RUN_META_FILE, SUMMARY_FILE};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +51,8 @@ pub struct RunConfig {
     pub total_steps: Option<u64>,
     /// Whether to watch every registered metric for NaN/Inf and spikes.
     pub detect_anomalies: bool,
+    /// Deploy mode in effect, recorded in `run.meta`.
+    pub mode: DeployMode,
 }
 
 impl RunConfig {
@@ -64,6 +66,7 @@ impl RunConfig {
             config: serde_json::Value::Null,
             total_steps: None,
             detect_anomalies: true,
+            mode: DeployMode::detect(None),
         }
     }
 }
@@ -81,15 +84,24 @@ impl Engine {
     /// Returns [`EmryError::Io`] if the run directory's JSONL files cannot be
     /// opened.
     pub fn start(config: RunConfig) -> Result<RunHandle, EmryError> {
+        let RunConfig {
+            project,
+            run_dir,
+            metric_names,
+            config: hyper_config,
+            total_steps: _,
+            detect_anomalies,
+            mode,
+        } = config;
+
         let mut registry = MetricRegistry::new();
-        for name in &config.metric_names {
+        for name in &metric_names {
             registry.register(name);
         }
         let registry = Arc::new(Mutex::new(registry));
 
-        let detectors = if config.detect_anomalies {
-            config
-                .metric_names
+        let detectors = if detect_anomalies {
+            metric_names
                 .iter()
                 .map(|name| {
                     let id = registry.lock().expect("registry poisoned").register(name);
@@ -100,17 +112,31 @@ impl Engine {
             Vec::new()
         };
 
-        let sink = JsonlSink::spawn(&config.run_dir)?;
+        let sink = JsonlSink::spawn(&run_dir)?;
         let bus = Arc::new(EventBus::new());
         let (mut producer, consumer) = event_ring();
         let stop = Arc::new(AtomicBool::new(false));
 
         let start_time_secs = unix_secs_now();
         let run_id = uuid::Uuid::new_v4();
+
+        // Metadata files (EMRY-016): run.meta + config.json at start.
+        emry_store::write_json(
+            &run_dir,
+            RUN_META_FILE,
+            &RunMetaFile {
+                run_id,
+                project: project.clone(),
+                start_time_secs,
+                mode: mode.to_string(),
+            },
+        )?;
+        emry_store::write_json(&run_dir, CONFIG_FILE, &hyper_config)?;
+
         let meta = RunMeta {
             run_id,
-            project: config.project,
-            config: config.config,
+            project: project.clone(),
+            config: hyper_config,
             start_time_secs,
         };
         // Opening event; the worker persists and publishes it like any other.
@@ -130,6 +156,8 @@ impl Engine {
             producer,
             bus,
             registry,
+            project,
+            run_dir,
             step: 0,
             epoch: 0,
             phase: Phase::Train,
@@ -146,6 +174,8 @@ pub struct RunHandle {
     producer: EventProducer,
     bus: Arc<EventBus>,
     registry: Arc<Mutex<MetricRegistry>>,
+    project: String,
+    run_dir: PathBuf,
     step: u64,
     epoch: u32,
     phase: Phase,
@@ -249,7 +279,22 @@ impl RunHandle {
         // worker drains the ring after stopping, so a pushed RunFinished is
         // still written; join() can never hang.
         self.stop.store(true, Ordering::Release);
-        handle.join().expect("engine worker thread panicked")
+        let worker_result = handle.join().expect("engine worker thread panicked");
+
+        // summary.json (EMRY-016) once the worker has flushed everything.
+        let summary_result = emry_store::write_json(
+            &self.run_dir,
+            SUMMARY_FILE,
+            &Summary {
+                run_id: self.run_id,
+                project: self.project.clone(),
+                duration_secs,
+                reason,
+                steps: self.step,
+                dropped: self.producer.dropped(),
+            },
+        );
+        worker_result.and(summary_result)
     }
 }
 
@@ -498,6 +543,51 @@ mod tests {
         cfg.detect_anomalies = false;
         // matches! avoids requiring RunHandle: Debug (which unwrap_err needs).
         assert!(matches!(Engine::start(cfg), Err(EmryError::Io(_))));
+    }
+
+    #[test]
+    fn writes_run_meta_config_and_summary_files() {
+        use emry_store::{RunMetaFile, Summary, CONFIG_FILE, RUN_META_FILE, SUMMARY_FILE};
+
+        let dir = TempDir::new();
+        let mut cfg = config(dir.path());
+        cfg.config = serde_json::json!({ "lr": 2e-5 });
+        let mut run = Engine::start(cfg).unwrap();
+        let run_id = run.run_id();
+        let loss = run.register("loss");
+        run.emit(&[(loss, 0.5)]);
+        run.emit(&[(loss, 0.4)]);
+        run.finish().unwrap();
+
+        // run.meta carries the v4 run_id and mode.
+        let meta: RunMetaFile =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(RUN_META_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(meta.run_id, run_id);
+        assert_eq!(meta.project, "test-run");
+        assert!(!meta.mode.is_empty());
+
+        // config.json holds the hyperparameters verbatim.
+        let cfg_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(CONFIG_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(cfg_json["lr"], 2e-5);
+
+        // summary.json records the final counts and reason.
+        let summary: Summary =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join(SUMMARY_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(summary.run_id, run_id);
+        assert_eq!(summary.steps, 2);
+        assert_eq!(summary.reason, FinishReason::Completed);
+    }
+
+    #[test]
+    fn run_id_is_uuid_v4() {
+        let dir = TempDir::new();
+        let run = Engine::start(config(dir.path())).unwrap();
+        assert_eq!(run.run_id().get_version_num(), 4);
+        run.finish().unwrap();
     }
 
     #[test]
