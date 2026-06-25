@@ -31,7 +31,11 @@ def _resolve_mode(mode: object) -> str:
         return mode.value
     if isinstance(mode, str):
         parsed = DeployMode.parse(mode)
-        return parsed.value if parsed is not None else mode
+        if parsed is None:
+            raise ValueError(
+                f"unknown mode {mode!r} (expected embedded, sidecar, or file)"
+            )
+        return parsed.value
     return detect().value
 
 
@@ -85,7 +89,7 @@ class JsonlBackend:
         self._metrics.write(json.dumps(row) + "\n")
         self._metrics.flush()  # keep the file live for `emry watch`
 
-    def finish(self, *, steps: int) -> None:
+    def finish(self, *, steps: int, reason: str = "COMPLETED") -> None:
         """Writes ``summary.json`` and closes ``metrics.jsonl``."""
         _write_json(
             self._run_dir / SUMMARY_FILE,
@@ -93,12 +97,20 @@ class JsonlBackend:
                 "run_id": self._run_id,
                 "project": self._project,
                 "duration_secs": time.time() - self._start_secs,
-                "reason": "COMPLETED",
+                "reason": reason,
                 "steps": steps,
                 "dropped": 0,
             },
         )
         self._metrics.close()
+
+    def __del__(self) -> None:
+        # Safety net: close the file even if finish() was never called (no `with`
+        # block, or an early crash). Idempotent — close() on a closed file is a
+        # no-op.
+        metrics = getattr(self, "_metrics", None)
+        if metrics is not None and not metrics.closed:
+            metrics.close()
 
 
 def _write_json(path: Path, value: Any) -> None:

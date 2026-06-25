@@ -33,8 +33,12 @@ class Backend(Protocol):
     def emit(self, step: int, epoch: int, phase: Phase, values: dict[str, float]) -> None:
         """Records one step's coerced metric values."""
 
-    def finish(self, *, steps: int) -> None:
-        """Flushes and closes the run after `steps` emissions."""
+    def finish(self, *, steps: int, reason: str) -> None:
+        """Flushes and closes the run after `steps` emissions.
+
+        `reason` is the screaming-snake `FinishReason` (`COMPLETED` |
+        `INTERRUPTED` | `FAILED`).
+        """
 
 
 class NullBackend:
@@ -43,7 +47,7 @@ class NullBackend:
     def emit(self, step: int, epoch: int, phase: Phase, values: dict[str, float]) -> None:
         """Drops the metrics."""
 
-    def finish(self, *, steps: int) -> None:
+    def finish(self, *, steps: int, reason: str) -> None:
         """No-op."""
 
 
@@ -112,17 +116,27 @@ class Run:
         """Passes an iterable (e.g. a dataloader) through unchanged."""
         yield from iterable
 
-    def finish(self) -> None:
-        """Flushes and closes the run. Idempotent."""
+    def finish(self, reason: str = "COMPLETED") -> None:
+        """Flushes and closes the run. Idempotent.
+
+        `reason` is the screaming-snake `FinishReason`; defaults to `COMPLETED`.
+        """
         if not self._finished:
-            self._backend.finish(steps=self._step)
+            self._backend.finish(steps=self._step, reason=reason)
             self._finished = True
 
     def __enter__(self) -> "Run":
         return self
 
-    def __exit__(self, *_exc: object) -> bool:
-        self.finish()
+    def __exit__(self, exc_type: Optional[type], *_rest: object) -> bool:
+        # Record how the run ended so a crashed `with` block isn't logged as
+        # COMPLETED (mirrors the Rust FinishReason).
+        if exc_type is None:
+            self.finish("COMPLETED")
+        elif issubclass(exc_type, KeyboardInterrupt):
+            self.finish("INTERRUPTED")
+        else:
+            self.finish("FAILED")
         return False  # never suppress exceptions
 
 

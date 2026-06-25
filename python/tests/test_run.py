@@ -15,12 +15,14 @@ class FakeBackend:
     def __init__(self):
         self.emitted = []  # (step, epoch, phase, values)
         self.finished_at = None
+        self.finish_reason = None
 
     def emit(self, step, epoch, phase, values):
         self.emitted.append((step, epoch, phase, values))
 
-    def finish(self, *, steps):
+    def finish(self, *, steps, reason):
         self.finished_at = steps
+        self.finish_reason = reason
 
 
 def test_emit_coerces_and_forwards_with_advancing_step():
@@ -64,6 +66,35 @@ def test_finish_is_idempotent_and_blocks_further_emit():
     r.finish()  # no-op, no error
     with pytest.raises(RuntimeError, match="after the run finished"):
         r.emit(loss=1.0)
+
+
+def test_exit_records_failed_reason_on_exception():
+    fake = FakeBackend()
+    with pytest.raises(ValueError):
+        with run("p", backend=fake) as r:
+            r.emit(loss=1.0)
+            raise ValueError("boom")
+    assert fake.finish_reason == "FAILED"
+
+
+def test_exit_records_interrupted_on_keyboard_interrupt():
+    fake = FakeBackend()
+    with pytest.raises(KeyboardInterrupt):
+        with run("p", backend=fake) as r:
+            raise KeyboardInterrupt
+    assert fake.finish_reason == "INTERRUPTED"
+
+
+def test_clean_exit_records_completed():
+    fake = FakeBackend()
+    with run("p", backend=fake):
+        pass
+    assert fake.finish_reason == "COMPLETED"
+
+
+def test_invalid_mode_string_raises(tmp_path):
+    with pytest.raises(ValueError, match="unknown mode"):
+        run("p", log_dir=str(tmp_path), mode="typo")
 
 
 def test_run_factory_uses_injected_backend():
