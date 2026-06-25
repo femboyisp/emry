@@ -1,13 +1,8 @@
 //! Run engine: processors, pipeline, and `RunHandle`.
 
+pub mod pipeline;
+pub mod processor;
+
 pub use emry_core::{EmryError, Phase, RunMeta};
-
-#[cfg(test)]
-mod tests {
-    use super::Phase;
-
-    #[test]
-    fn reexports_are_usable() {
-        assert_eq!(format!("{:?}", Phase::Train), "Train");
-    }
-}
+pub use pipeline::{Pipeline, PipelineStats};
+pub use processor::{DerivedMetric, Processor};
