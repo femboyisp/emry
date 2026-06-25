@@ -28,6 +28,17 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// Binds a Unix socket at `path` with `0600` permissions, removing any stale
 /// socket file first.
 ///
+/// # Security
+///
+/// There is a brief window between `bind` (which creates the socket file with
+/// `0777 & ~umask`) and the `set_permissions` call below during which the file
+/// may be more permissive. Connecting to a Unix socket requires *write*
+/// permission, so under the common `0022` umask (socket `0755`, others `r-x`) no
+/// other user can connect in that window; it is only exploitable under a
+/// permissive umask. Tightening it fully would require `umask(2)` (ruled out by
+/// the workspace `unsafe` ban). For hardened deployments, place the socket in a
+/// caller-owned `0700` directory (see the SLURM runbook, EMRY-054).
+///
 /// # Errors
 ///
 /// Returns [`EmryError::Io`] if the path cannot be bound or its permissions set.

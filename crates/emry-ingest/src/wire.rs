@@ -76,12 +76,17 @@ pub fn write_frame<W: Write>(w: &mut W, event: &Event) -> Result<(), EmryError> 
 /// on a short read (a truncated frame).
 pub fn read_frame<R: Read>(r: &mut R) -> Result<Option<Event>, EmryError> {
     let mut len_buf = [0u8; 4];
-    match r.read_exact(&mut len_buf) {
-        Ok(()) => {}
-        // EOF exactly at a frame boundary: the peer closed cleanly.
-        Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+    // Probe one byte first: 0 bytes read = clean EOF at a frame boundary; a
+    // short read of the remaining 3 = a truncated header, which must surface as
+    // an error rather than masquerade as a clean close (read_exact alone cannot
+    // tell these apart — both yield UnexpectedEof).
+    match r.read(&mut len_buf[..1]) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::Interrupted => return read_frame(r),
         Err(e) => return Err(e.into()),
     }
+    r.read_exact(&mut len_buf[1..])?;
     let len = u32::from_le_bytes(len_buf);
     if len > MAX_FRAME_BYTES {
         return Err(EmryError::Protocol(format!(
@@ -155,6 +160,15 @@ mod tests {
         let mut cursor = Cursor::new(buf);
         let err = read_frame(&mut cursor).unwrap_err();
         assert!(matches!(err, EmryError::Protocol(_)));
+    }
+
+    #[test]
+    fn truncated_header_is_io_error_not_clean_eof() {
+        // 2 bytes of a 4-byte length prefix, then EOF — a corrupt/truncated
+        // stream, which must NOT be reported as a clean close.
+        let mut cursor = Cursor::new(vec![0u8, 0u8]);
+        let err = read_frame(&mut cursor).unwrap_err();
+        assert!(matches!(err, EmryError::Io(_)));
     }
 
     #[test]
