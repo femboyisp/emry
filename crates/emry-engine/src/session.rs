@@ -21,6 +21,9 @@
 //! ([`Event::Alert`]) has a home in the event stream.
 
 use crate::anomaly::AnomalyDetector;
+use crate::processor::Processor;
+use crate::stats::Ema;
+use crate::throughput::Throughput;
 use emry_core::{
     event_ring, DeployMode, EmryError, Event, EventBus, EventConsumer, EventProducer, FinishReason,
     MetricId, MetricRecord, MetricRegistry, Phase, RunMeta,
@@ -51,6 +54,11 @@ pub struct RunConfig {
     pub total_steps: Option<u64>,
     /// Whether to watch every registered metric for NaN/Inf and spikes.
     pub detect_anomalies: bool,
+    /// EMA smoothing factor; `Some(alpha)` adds a `{name}_ema` series per metric.
+    pub smoothing: Option<f64>,
+    /// Whether to derive `steps_per_sec` (and `eta_secs` when `total_steps` is
+    /// known) from step timing.
+    pub track_throughput: bool,
     /// Deploy mode in effect, recorded in `run.meta`.
     pub mode: DeployMode,
 }
@@ -66,6 +74,8 @@ impl RunConfig {
             config: serde_json::Value::Null,
             total_steps: None,
             detect_anomalies: true,
+            smoothing: Some(0.1),
+            track_throughput: true,
             mode: DeployMode::detect(None),
         }
     }
@@ -89,8 +99,10 @@ impl Engine {
             run_dir,
             metric_names,
             config: hyper_config,
-            total_steps: _,
+            total_steps,
             detect_anomalies,
+            smoothing,
+            track_throughput,
             mode,
         } = config;
 
@@ -111,6 +123,21 @@ impl Engine {
         } else {
             Vec::new()
         };
+
+        // Derived-metric processors. Their outputs are published to the bus for
+        // live observers but not persisted (they are recomputable from the raw
+        // logs, which keeps events.jsonl / metrics.jsonl clean).
+        let mut processors: Vec<Box<dyn Processor>> = Vec::new();
+        if let Some(alpha) = smoothing {
+            let mut reg = registry.lock().expect("registry poisoned");
+            for name in &metric_names {
+                let id = reg.register(name);
+                processors.push(Box::new(Ema::new(id, format!("{name}_ema"), alpha)));
+            }
+        }
+        if track_throughput {
+            processors.push(Box::new(Throughput::new(total_steps, 64)));
+        }
 
         let sink = JsonlSink::spawn(&run_dir)?;
         let bus = Arc::new(EventBus::new());
@@ -148,6 +175,7 @@ impl Engine {
             sink,
             registry: Arc::clone(&registry),
             detectors,
+            processors,
             stop: Arc::clone(&stop),
         };
         let handle = std::thread::spawn(move || worker.run());
@@ -308,13 +336,14 @@ impl Drop for RunHandle {
     }
 }
 
-/// The worker thread: owns the consumer, sink, and detectors.
+/// The worker thread: owns the consumer, sink, detectors, and processors.
 struct Worker {
     consumer: EventConsumer,
     bus: Arc<EventBus>,
     sink: JsonlSink,
     registry: Arc<Mutex<MetricRegistry>>,
     detectors: Vec<AnomalyDetector>,
+    processors: Vec<Box<dyn Processor>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -359,6 +388,37 @@ impl Worker {
                 self.bus.publish(&alert_event);
             }
         }
+
+        self.publish_derived(event);
+    }
+
+    /// Runs the derived-metric processors and publishes their outputs to the bus
+    /// (live observers only — not persisted; see `Engine::start`).
+    fn publish_derived(&mut self, event: &Event) {
+        let Some((step, epoch, phase)) = step_context(event) else {
+            return; // processors only emit for metric events
+        };
+        let derived: Vec<_> = self
+            .processors
+            .iter_mut()
+            .flat_map(|p| p.on_event(event))
+            .collect();
+        if derived.is_empty() {
+            return;
+        }
+        let values: Vec<(MetricId, f64)> = {
+            let mut reg = self.registry.lock().expect("registry poisoned");
+            derived
+                .into_iter()
+                .map(|d| (reg.register(&d.name), d.value))
+                .collect()
+        };
+        self.bus.publish(&Event::MetricsBatch {
+            step,
+            epoch,
+            phase,
+            values,
+        });
     }
 
     /// Builds a wide [`MetricRecord`] (resolved names) from a metric event.
@@ -393,6 +453,19 @@ impl Worker {
             phase,
             values,
         })
+    }
+}
+
+/// The `(step, epoch, phase)` of a metric event, or `None` for other events.
+fn step_context(event: &Event) -> Option<(u64, u32, Phase)> {
+    match event {
+        Event::Metric {
+            step, epoch, phase, ..
+        }
+        | Event::MetricsBatch {
+            step, epoch, phase, ..
+        } => Some((*step, *epoch, *phase)),
+        _ => None,
     }
 }
 
@@ -580,6 +653,60 @@ mod tests {
         assert_eq!(summary.run_id, run_id);
         assert_eq!(summary.steps, 2);
         assert_eq!(summary.reason, FinishReason::Completed);
+    }
+
+    #[test]
+    fn derived_metrics_are_published_to_bus_not_persisted() {
+        let dir = TempDir::new();
+        let mut run = Engine::start(config(dir.path())).unwrap();
+        let observer = run.bus().subscribe();
+        let loss_ema = run.register("loss_ema");
+        let sps = run.register("steps_per_sec");
+        let loss = run.register("loss");
+        for step in 0..10 {
+            run.emit(&[(loss, 1.0 / f64::from(step + 1))]);
+        }
+        run.finish().unwrap();
+
+        // The bus carries synthetic derived batches naming loss_ema / steps_per_sec.
+        let seen: Vec<Event> = observer.try_iter().collect();
+        let derived_ids: std::collections::HashSet<MetricId> = seen
+            .iter()
+            .filter_map(|e| match e {
+                Event::MetricsBatch { values, .. } => Some(values.iter().map(|(id, _)| *id)),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(derived_ids.contains(&loss_ema), "EMA published to bus");
+        assert!(derived_ids.contains(&sps), "throughput published to bus");
+
+        // …but derived metrics are not written to metrics.jsonl (raw only).
+        let metrics = lines(&dir.path().join(METRICS_FILE));
+        assert_eq!(metrics.len(), 10);
+        assert!(metrics.iter().all(|l| !l.contains("loss_ema")));
+    }
+
+    #[test]
+    fn derived_processors_can_be_disabled() {
+        let dir = TempDir::new();
+        let mut cfg = config(dir.path());
+        cfg.smoothing = None;
+        cfg.track_throughput = false;
+        let mut run = Engine::start(cfg).unwrap();
+        let observer = run.bus().subscribe();
+        let loss = run.register("loss");
+        run.emit(&[(loss, 1.0)]);
+        run.finish().unwrap();
+
+        // Every batch on the bus is a raw single-metric emit; no derived batches.
+        let derived = observer
+            .try_iter()
+            .any(|e| matches!(e, Event::MetricsBatch { values, .. } if values.len() > 1));
+        assert!(
+            !derived,
+            "no derived metrics when smoothing/throughput are off"
+        );
     }
 
     #[test]
