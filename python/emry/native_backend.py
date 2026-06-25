@@ -52,11 +52,12 @@ def try_create(
 class NativeBackend:  # pragma: no cover - requires the compiled extension
     """Wraps ``emry._native.RunHandle`` behind the SDK's ``Backend`` protocol."""
 
-    def __init__(self, handle: Any, ids: dict[str, int]) -> None:
+    def __init__(self, handle: Any, ids: dict[str, int], run_dir: Path) -> None:
         self._handle = handle
         self._ids = ids
         self._phase: Optional[Phase] = None
         self._epoch = 0
+        self.run_dir = run_dir
 
     @classmethod
     def create(
@@ -77,7 +78,7 @@ class NativeBackend:  # pragma: no cover - requires the compiled extension
         names = list(metrics)
         handle = _native.RunHandle(project, str(run_dir), names, total_steps)
         ids = {name: handle.register(name) for name in names}
-        return cls(handle, ids)
+        return cls(handle, ids, run_dir)
 
     def emit(self, step: int, epoch: int, phase: Phase, values: dict[str, float]) -> None:
         if epoch != self._epoch:

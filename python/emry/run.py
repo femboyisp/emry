@@ -153,18 +153,44 @@ def run(
     """Starts a run and returns its [`Run`] handle.
 
     With no `backend`, persists to a pure-Python JSONL run directory (`file`
-    mode). Pass `backend` to inject an alternative (e.g. a fake in tests). The
-    `live` observer-spawning argument is accepted now and honoured in EMRY-035.
+    mode) and, per `live`, may launch a dashboard. Pass `backend` to inject an
+    alternative (e.g. a fake in tests) — observer spawning is skipped then, since
+    the caller is in full control.
     """
-    if backend is None:
-        backend = _default_backend(
-            project,
-            config=dict(config or {}),
-            metrics=list(metrics or []),
-            mode=mode,
-            log_dir=log_dir,
-        )
+    if backend is not None:
+        return Run(project, backend, metrics=metrics, config=config)
+
+    backend = _default_backend(
+        project,
+        config=dict(config or {}),
+        metrics=list(metrics or []),
+        mode=mode,
+        log_dir=log_dir,
+    )
+    _spawn_live(live, backend)
     return Run(project, backend, metrics=metrics, config=config)
+
+
+def _spawn_live(live: object, backend: Backend) -> None:
+    """Launches the live dashboard observer(s) selected by `live`."""
+    import os
+    import sys
+
+    from emry.live import resolve_live, spawn_observers
+
+    isatty = getattr(sys.stdout, "isatty", None)
+    observers = resolve_live(
+        live,
+        ssh="SSH_CONNECTION" in os.environ,
+        tty=bool(isatty()) if callable(isatty) else False,
+        force_tui=os.environ.get("EMRY_LIVE_FORCE") == "1",
+    )
+    if observers:
+        spawn_observers(
+            observers,
+            run_dir=getattr(backend, "run_dir", None),
+            socket_path=os.environ.get("EMRY_SOCKET"),
+        )
 
 
 def _default_backend(
