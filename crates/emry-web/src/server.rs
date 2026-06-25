@@ -144,7 +144,15 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert!(body.starts_with(b"<!DOCTYPE html>"));
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        // The dashboard ships its chart canvas, the WS wiring, and the brand
+        // accent — and stays self-hosted (no external script/style URLs).
+        assert!(html.contains("<canvas"));
+        assert!(html.contains("/ws"));
+        assert!(html.contains("#c4714a")); // terracotta
+        assert!(!html.contains("http://") || html.contains("ws://"));
+        assert!(!html.contains("https://"), "no CDN — air-gap friendly");
     }
 
     #[tokio::test]
