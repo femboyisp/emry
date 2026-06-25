@@ -86,12 +86,17 @@ impl JsonlTailer {
 
         // Consume only up to the last newline; keep any partial trailing line.
         let consumed = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        let text = std::str::from_utf8(&bytes[..consumed])
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         self.offset += consumed as u64;
 
+        // Decode per line: a line with invalid UTF-8 (e.g. a stray binary write)
+        // is skipped and counted rather than aborting the whole poll — third-party
+        // files must not take down the watcher.
         let mut events = Vec::new();
-        for line in text.lines() {
+        for line_bytes in bytes[..consumed].split(|&b| b == b'\n') {
+            let Ok(line) = std::str::from_utf8(line_bytes) else {
+                self.skipped += 1;
+                continue;
+            };
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -141,18 +146,18 @@ impl JsonlTailer {
 /// Polls `path` until `stop` is set, passing each non-empty batch of parsed
 /// events to `on_events`. The thin live driver over [`JsonlTailer`].
 ///
-/// # Errors
-///
-/// Returns any [`std::io::Error`] from polling.
+/// Transient poll errors are swallowed and retried on the next tick rather than
+/// terminating the loop — over NFS on HPC a brief I/O hiccup must not kill a
+/// long-running watch; the dashboard simply shows no new data until it recovers.
 pub fn run_watch<F: FnMut(&[Event])>(
     path: impl Into<PathBuf>,
     poll_interval: Duration,
     stop: &AtomicBool,
     mut on_events: F,
-) -> std::io::Result<()> {
+) {
     let mut tailer = JsonlTailer::new(path);
     while !stop.load(Ordering::Acquire) {
-        let events = tailer.poll()?;
+        let events = tailer.poll().unwrap_or_default();
         if !events.is_empty() {
             on_events(&events);
         }
@@ -160,7 +165,6 @@ pub fn run_watch<F: FnMut(&[Event])>(
             std::thread::sleep(poll_interval);
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -183,12 +187,15 @@ mod tests {
             Self(p)
         }
         fn append(&self, line: &str) {
+            self.append_bytes(line.as_bytes());
+        }
+        fn append_bytes(&self, bytes: &[u8]) {
             let mut f = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&self.0)
                 .unwrap();
-            f.write_all(line.as_bytes()).unwrap();
+            f.write_all(bytes).unwrap();
         }
         fn path(&self) -> &Path {
             &self.0
@@ -305,17 +312,32 @@ mod tests {
     }
 
     #[test]
+    fn invalid_utf8_line_is_skipped_not_fatal() {
+        let f = TempFile::new();
+        f.append("{\"step\":0,\"values\":{\"loss\":1.0}}\n");
+        f.append_bytes(&[0xff, 0xfe, b'\n']); // invalid UTF-8 line
+        f.append("{\"step\":1,\"values\":{\"loss\":0.9}}\n");
+        let mut t = JsonlTailer::new(f.path());
+        let events = t.poll().unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "valid rows still parse around the bad line"
+        );
+        assert_eq!(t.skipped(), 1);
+    }
+
+    #[test]
     fn run_watch_stops_on_flag_and_delivers_events() {
         let f = TempFile::new();
         f.append("{\"step\":0,\"values\":{\"loss\":1.0}}\n");
         let stop = AtomicBool::new(false);
         let mut total = 0usize;
-        // Stop is already... no: set stop after the first poll via the callback.
+        // Callback sets stop after the first delivery, ending the loop.
         run_watch(f.path(), Duration::ZERO, &stop, |events| {
             total += events.len();
             stop.store(true, Ordering::Release);
-        })
-        .unwrap();
+        });
         assert_eq!(total, 1);
     }
 }
