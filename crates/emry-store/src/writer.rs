@@ -13,7 +13,7 @@
 //! thread lives in [`crate::sink`].
 
 use emry_core::{EmryError, Event, MetricRecord};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -30,16 +30,20 @@ pub struct JsonlWriter {
 }
 
 impl JsonlWriter {
-    /// Creates (or truncates) both JSONL files in `dir`, which must already
-    /// exist.
+    /// Opens both JSONL files in `dir` (which must already exist) for appending,
+    /// creating them if absent.
+    ///
+    /// Append mode preserves the append-only audit trail: re-opening a run
+    /// directory (e.g. after a sidecar restart) continues the existing logs
+    /// rather than truncating them.
     ///
     /// # Errors
     ///
-    /// Returns [`EmryError::Io`] if either file cannot be created.
+    /// Returns [`EmryError::Io`] if either file cannot be opened.
     pub fn create(dir: &Path) -> Result<Self, EmryError> {
         Ok(Self {
-            events: BufWriter::new(File::create(dir.join(EVENTS_FILE))?),
-            metrics: BufWriter::new(File::create(dir.join(METRICS_FILE))?),
+            events: BufWriter::new(open_append(&dir.join(EVENTS_FILE))?),
+            metrics: BufWriter::new(open_append(&dir.join(METRICS_FILE))?),
         })
     }
 
@@ -73,6 +77,11 @@ impl JsonlWriter {
         self.metrics.flush()?;
         Ok(())
     }
+}
+
+/// Opens `path` for appending, creating it if it does not exist.
+fn open_append(path: &Path) -> Result<File, EmryError> {
+    Ok(OpenOptions::new().create(true).append(true).open(path)?)
 }
 
 /// Serializes `value` as one JSON object followed by a newline.
@@ -169,6 +178,24 @@ mod tests {
         assert_eq!(parsed.step, 100);
         assert_eq!(parsed.phase, Phase::Eval);
         assert!((parsed.values["acc"] - 0.91).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reopening_appends_rather_than_truncating() {
+        let dir = TempRunDir::new();
+        {
+            let mut w = JsonlWriter::create(dir.path()).unwrap();
+            w.write_metric(&record(0, 0.5)).unwrap();
+            w.flush().unwrap();
+        }
+        {
+            // Re-open the same run dir (e.g. sidecar restart): must not wipe.
+            let mut w = JsonlWriter::create(dir.path()).unwrap();
+            w.write_metric(&record(1, 0.4)).unwrap();
+            w.flush().unwrap();
+        }
+        let metrics = fs::read_to_string(dir.path().join(METRICS_FILE)).unwrap();
+        assert_eq!(metrics.lines().count(), 2, "second open appended");
     }
 
     #[test]

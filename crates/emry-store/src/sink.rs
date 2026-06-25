@@ -82,12 +82,17 @@ impl JsonlSink {
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
             }
-            // Drain anything still queued, then flush everything.
+            // Drain anything still queued, then flush. Capture a write error
+            // but still flush, so records written before the error reach disk.
+            let mut result = Ok(());
             for record in rx.try_iter() {
-                write_record(&mut writer, &record)?;
+                if let Err(err) = write_record(&mut writer, &record) {
+                    result = Err(err);
+                    break;
+                }
             }
-            writer.flush()?;
-            Ok(())
+            let flush_result = writer.flush();
+            result.and(flush_result)
         });
 
         Ok(Self {
@@ -148,8 +153,12 @@ impl JsonlSink {
 
 impl Drop for JsonlSink {
     fn drop(&mut self) {
-        // Best-effort flush on drop; errors are ignored (finish() surfaces them).
-        let _ = self.shutdown();
+        // Best-effort flush on drop. Prefer finish() to handle errors; if the
+        // sink is only dropped, surface a write failure on stderr rather than
+        // letting a disk-full / disconnect vanish silently.
+        if let Err(err) = self.shutdown() {
+            eprintln!("emry: failed to flush run logs on shutdown: {err}");
+        }
     }
 }
 
