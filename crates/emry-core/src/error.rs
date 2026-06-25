@@ -12,6 +12,10 @@ pub enum EmryError {
     /// JSON serialization or deserialization failed.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Wire-protocol framing or msgpack (de)serialization failed.
+    #[error("protocol error: {0}")]
+    Protocol(String),
 }
 
 #[cfg(test)]
@@ -30,5 +34,11 @@ mod tests {
         let err = serde_json::from_str::<serde_json::Value>("not-json").unwrap_err();
         let wrapped = EmryError::Json(err);
         assert!(wrapped.to_string().starts_with("json error:"));
+    }
+
+    #[test]
+    fn protocol_error_display() {
+        let err = EmryError::Protocol("frame too large".to_string());
+        assert_eq!(err.to_string(), "protocol error: frame too large");
     }
 }

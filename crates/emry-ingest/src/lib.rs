@@ -1,9 +1,14 @@
 //! Ingest: Unix socket, file tail, wire protocol.
 
 pub mod watch;
+pub mod wire;
+
+#[cfg(unix)]
+pub mod socket;
 
 pub use emry_core::EmryError;
 pub use watch::{run_watch, JsonlTailer};
+pub use wire::{read_frame, write_frame, MAX_FRAME_BYTES};
 
 #[cfg(test)]
 mod tests {
