@@ -16,7 +16,7 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
 use crossbeam_channel::Receiver;
-use emry_core::Event;
+use emry_core::{Event, MetricId};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -84,7 +84,19 @@ fn snapshot_json(state: &SharedState) -> String {
 /// lifetime, so this is the natural shutdown; there is no separate stop signal.
 #[must_use]
 pub fn spawn_state(events: Receiver<Event>) -> SharedState {
-    let state: SharedState = Arc::new(Mutex::new(WebState::default()));
+    spawn_state_with_labels(events, &[])
+}
+
+/// Like [`spawn_state`], but seeds metric `labels` (id → name) so the dashboard
+/// shows real names instead of the `m{id}` fallback. The live bus carries only
+/// [`MetricId`]s, so callers that know the names (e.g. the embedded SDK) pass
+/// them here; the file-tail path resolves names from `metrics.jsonl`.
+#[must_use]
+pub fn spawn_state_with_labels(
+    events: Receiver<Event>,
+    labels: &[(MetricId, &str)],
+) -> SharedState {
+    let state: SharedState = Arc::new(Mutex::new(WebState::with_labels(labels)));
     let drain = Arc::clone(&state);
     std::thread::spawn(move || {
         while let Ok(event) = events.recv() {
@@ -102,7 +114,20 @@ pub fn spawn_state(events: Receiver<Event>) -> SharedState {
 ///
 /// Returns an [`std::io::Error`] if the address cannot be bound or serving fails.
 pub async fn serve(addr: SocketAddr, events: Receiver<Event>) -> std::io::Result<()> {
-    let state = spawn_state(events);
+    serve_with_labels(addr, events, &[]).await
+}
+
+/// Like [`serve`], but seeds metric `labels` for real metric names.
+///
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if the address cannot be bound or serving fails.
+pub async fn serve_with_labels(
+    addr: SocketAddr,
+    events: Receiver<Event>,
+    labels: &[(MetricId, &str)],
+) -> std::io::Result<()> {
+    let state = spawn_state_with_labels(events, labels);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app(state)).await
 }

@@ -163,11 +163,26 @@
         ctx.beginPath();
         data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
         ctx.stroke();
-        // axis labels
-        ctx.fillStyle = C.gray;
+        // current-value dot at the latest point
+        const lastV = data[data.length - 1];
+        if (Number.isFinite(lastV)) {
+          ctx.fillStyle = C.terracotta;
+          ctx.beginPath();
+          ctx.arc(x(data.length - 1), y(lastV), 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // y-axis value labels with a panel-colored backing so they don't clash
+        // with the gridlines.
         ctx.font = "11px monospace";
-        ctx.fillText(max.toPrecision(4), 2, y(max) + 4);
-        ctx.fillText(min.toPrecision(4), 2, y(min) + 4);
+        const label = (text, yy) => {
+          const tw = ctx.measureText(text).width;
+          ctx.fillStyle = "#221e1a";
+          ctx.fillRect(2, yy - 9, tw + 4, 12);
+          ctx.fillStyle = C.gray;
+          ctx.fillText(text, 3, yy);
+        };
+        label(max.toPrecision(4), y(max) + 9);
+        label(min.toPrecision(4), y(min) - 2);
       }
 
       function renderCards(metrics) {
