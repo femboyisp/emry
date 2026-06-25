@@ -4,4 +4,6 @@ pub mod error;
 pub mod types;
 
 pub use error::EmryError;
-pub use types::{Phase, RunMeta};
+pub use types::{
+    AlertRecord, Event, FinishReason, MetricId, MetricRecord, Phase, RunMeta, Severity,
+};
