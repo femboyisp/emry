@@ -12,7 +12,8 @@
 //!
 //! 1. An explicit API argument (e.g. `mode=` passed by the caller).
 //! 2. The `EMRY_MODE` environment variable (`embedded` | `sidecar` | `file`,
-//!    case-insensitive; an unrecognized value is ignored and falls through).
+//!    case-insensitive; an unrecognized, empty, or whitespace-only value is
+//!    ignored and falls through to auto-detection).
 //! 3. Auto-detection: `SSH_CONNECTION` or `SLURM_JOB_ID` present → sidecar;
 //!    otherwise a TTY on stdout → embedded; otherwise → file.
 //!
@@ -213,6 +214,27 @@ mod tests {
                 slurm: false,
                 tty: true,
                 expected: DeployMode::Embedded,
+            },
+            // Empty / whitespace EMRY_MODE (e.g. `export EMRY_MODE=`) is treated
+            // as unset and falls through to auto-detect. Pinned so the Python
+            // mirror (EMRY-031) replicates the same contract.
+            Case {
+                name: "empty EMRY_MODE falls through to auto",
+                api: None,
+                emry_mode: Some(""),
+                ssh: false,
+                slurm: false,
+                tty: false,
+                expected: DeployMode::File,
+            },
+            Case {
+                name: "whitespace-only EMRY_MODE falls through to auto",
+                api: None,
+                emry_mode: Some("   "),
+                ssh: true,
+                slurm: false,
+                tty: false,
+                expected: DeployMode::Sidecar,
             },
             Case {
                 name: "SSH -> sidecar",
