@@ -244,15 +244,20 @@ impl RunHandle {
             duration_secs,
             reason,
         });
+        // Also raise the stop flag: if the ring was full the RunFinished push
+        // above was dropped, and the worker would otherwise never exit. The
+        // worker drains the ring after stopping, so a pushed RunFinished is
+        // still written; join() can never hang.
+        self.stop.store(true, Ordering::Release);
         handle.join().expect("engine worker thread panicked")
     }
 }
 
 impl Drop for RunHandle {
     fn drop(&mut self) {
-        // Unfinished run: signal the worker to drain-and-exit, mark interrupted.
+        // Unfinished run: finish_with raises the stop flag and joins, so the
+        // worker drains and exits even if the ring is full.
         if self.worker.is_some() {
-            self.stop.store(true, Ordering::Release);
             let _ = self.finish_with(FinishReason::Interrupted);
         }
     }
