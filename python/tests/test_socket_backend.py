@@ -73,13 +73,21 @@ def test_socket_backend_streams_framed_events():
 
     events = decode_frames(bytes(received))
     types = [e["type"] for e in events]
-    # phase TRAIN batch, then a PHASE_CHANGE to EVAL, the EVAL batch, RUN_FINISHED.
-    assert types == ["METRICS_BATCH", "PHASE_CHANGE", "METRICS_BATCH", "RUN_FINISHED"]
-    assert events[0]["data"]["values"] == [[0, 1.0]]
-    assert events[1]["data"] == "EVAL"
+    # Initial PhaseChange(TRAIN), TRAIN batch, PhaseChange(EVAL), EVAL batch,
+    # RunFinished — the first phase is signalled so observers don't read stale.
+    assert types == [
+        "PHASE_CHANGE",
+        "METRICS_BATCH",
+        "PHASE_CHANGE",
+        "METRICS_BATCH",
+        "RUN_FINISHED",
+    ]
+    assert events[0]["data"] == "TRAIN"
+    assert events[1]["data"]["values"] == [[0, 1.0]]
+    assert events[2]["data"] == "EVAL"
     # A new metric name gets the next client-local id.
-    assert events[2]["data"]["values"] == [[0, 0.5], [1, 0.9]]
-    assert events[3]["data"]["reason"] == "COMPLETED"
+    assert events[3]["data"]["values"] == [[0, 0.5], [1, 0.9]]
+    assert events[4]["data"]["reason"] == "COMPLETED"
 
 
 def test_run_factory_streams_to_sidecar_engine(tmp_path):
@@ -121,10 +129,20 @@ def test_run_factory_streams_to_sidecar_engine(tmp_path):
 
 
 def test_sidecar_falls_back_to_jsonl_when_no_engine(tmp_path, monkeypatch):
-    # No engine listening: run() should fall back to the file backend, not raise.
+    # No engine listening: run() should fall back to the file backend (with a
+    # warning), not raise.
     monkeypatch.setenv("EMRY_SOCKET", str(tmp_path / "absent.sock"))
-    with run("sc", metrics=["loss"], mode="sidecar", log_dir=str(tmp_path)) as r:
-        r.emit(loss=1.0)
-    # A JSONL run dir was created instead.
+    with pytest.warns(UserWarning, match="not reachable"):
+        with run("sc", metrics=["loss"], mode="sidecar", log_dir=str(tmp_path)) as r:
+            r.emit(loss=1.0)
+    run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
+    assert (run_dir / "metrics.jsonl").exists()
+
+
+def test_sidecar_without_socket_warns_and_falls_back(tmp_path, monkeypatch):
+    monkeypatch.delenv("EMRY_SOCKET", raising=False)
+    with pytest.warns(UserWarning, match="EMRY_SOCKET is unset"):
+        with run("sc", metrics=["loss"], mode="sidecar", log_dir=str(tmp_path)) as r:
+            r.emit(loss=1.0)
     run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
     assert (run_dir / "metrics.jsonl").exists()

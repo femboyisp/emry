@@ -209,7 +209,22 @@ def _default_backend(
                     project, config=config, metrics=metrics, socket_path=socket_path
                 )
             except OSError:
-                pass  # no engine listening — fall back to file rather than fail
+                import warnings
+
+                warnings.warn(
+                    f"sidecar engine not reachable at EMRY_SOCKET={socket_path!r}; "
+                    "writing to a local JSONL run directory instead",
+                    stacklevel=2,
+                )
+        elif mode is not None:
+            # Sidecar was explicitly requested but no socket is configured.
+            import warnings
+
+            warnings.warn(
+                "sidecar mode requested but EMRY_SOCKET is unset; writing to a "
+                "local JSONL run directory instead",
+                stacklevel=2,
+            )
 
     from emry.jsonl_backend import JsonlBackend
 

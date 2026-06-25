@@ -53,9 +53,11 @@ class SocketBackend:
         return backend
 
     def emit(self, step: int, epoch: int, phase: Phase, values: dict[str, float]) -> None:
-        # Each batch carries the phase, so only emit a PhaseChange on an actual
-        # transition between set phases (not on the first emit from None).
-        if self._phase is not None and phase != self._phase:
+        # Emit a PhaseChange whenever the phase differs from the last one sent —
+        # including the very first emit. Observers (e.g. the TUI's UiState) track
+        # phase from PhaseChange events, not the MetricsBatch field, so the
+        # initial phase must be signalled or it would read as the default.
+        if phase != self._phase:
             self._send(wire.phase_change(phase.value))
         self._phase = phase
         pairs = []
