@@ -48,8 +48,13 @@ fail_under = 90
 show_missing = true
 skip_empty = true
 
-# PyO3 / maturin (EMRY-030) — enable when bindings ship:
-# [tool.maturin]
-# manifest-path = "crates/emry-py/Cargo.toml"
-# module-name = "emry._native"
-# python-source = "python"
+# PyO3 / maturin: the native `emry._native` extension is built with
+#   maturin develop --features extension-module
+# (or via `maturin build` for wheels in EMRY-036). The pip build backend stays
+# setuptools so `pip install -e .` works without a Rust toolchain; the native
+# module is an optional accelerator the SDK imports if present.
+[tool.maturin]
+manifest-path = "crates/emry-py/Cargo.toml"
+module-name = "emry._native"
+python-source = "python"
+features = ["extension-module"]

@@ -157,9 +157,7 @@ def run(
     `live` observer-spawning argument is accepted now and honoured in EMRY-035.
     """
     if backend is None:
-        from emry.jsonl_backend import JsonlBackend
-
-        backend = JsonlBackend.create(
+        backend = _default_backend(
             project,
             config=dict(config or {}),
             metrics=list(metrics or []),
@@ -167,3 +165,39 @@ def run(
             log_dir=log_dir,
         )
     return Run(project, backend, metrics=metrics, config=config)
+
+
+def _default_backend(
+    project: str,
+    *,
+    config: dict,
+    metrics: list,
+    mode: object,
+    log_dir: Optional[str],
+) -> Backend:
+    """Selects the backend: the native Rust engine in `embedded` mode (when the
+    extension is built), else the pure-Python JSONL writer."""
+    from emry.mode import DeployMode, detect
+
+    if isinstance(mode, DeployMode):
+        resolved = mode
+    elif isinstance(mode, str):
+        parsed = DeployMode.parse(mode)
+        if parsed is None:
+            raise ValueError(f"unknown mode {mode!r} (expected embedded, sidecar, or file)")
+        resolved = parsed
+    else:
+        resolved = detect()
+
+    if resolved is DeployMode.EMBEDDED:
+        from emry.native_backend import try_create
+
+        native = try_create(project, config=config, metrics=metrics, mode=resolved, log_dir=log_dir)
+        if native is not None:
+            return native
+
+    from emry.jsonl_backend import JsonlBackend
+
+    return JsonlBackend.create(
+        project, config=config, metrics=metrics, mode=resolved, log_dir=log_dir
+    )
