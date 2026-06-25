@@ -23,3 +23,4 @@ extension-module = ["pyo3/extension-module"]
 emry-core = { path = "../emry-core" }
 emry-engine = { path = "../emry-engine" }
 pyo3.workspace = true
+serde_json.workspace = true

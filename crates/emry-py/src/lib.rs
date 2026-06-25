@@ -61,6 +61,10 @@ mod native {
 
         /// Fast path: emits pre-registered `(metric_id, value)` pairs for the
         /// current step. Releases the GIL while the Rust side enqueues.
+        ///
+        /// Non-blocking: if the ring is full the batch is dropped and counted
+        /// rather than raising — poll [`dropped`](Self::dropped) to detect
+        /// saturation.
         fn emit(&mut self, py: Python<'_>, values: Vec<(u16, f64)>) -> PyResult<()> {
             let pairs: Vec<(emry_core::MetricId, f64)> = values
                 .into_iter()
@@ -127,17 +131,12 @@ mod native {
     }
 
     fn parse_phase(phase: &str) -> PyResult<emry_core::Phase> {
-        use emry_core::Phase;
-        match phase {
-            "TRAIN" => Ok(Phase::Train),
-            "EVAL" => Ok(Phase::Eval),
-            "TEST" => Ok(Phase::Test),
-            "CHECKPOINT" => Ok(Phase::Checkpoint),
-            "WARMUP" => Ok(Phase::Warmup),
-            other => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "unknown phase {other:?}"
-            ))),
-        }
+        // Parse through Phase's serde config (the single source of truth) so new
+        // variants are accepted automatically without updating a hand-written
+        // match here.
+        serde_json::from_value(serde_json::Value::String(phase.to_string())).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("unknown phase {phase:?}"))
+        })
     }
 
     /// The native module: `import emry._native`.

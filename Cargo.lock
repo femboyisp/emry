@@ -293,6 +293,7 @@ dependencies = [
  "emry-core",
  "emry-engine",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]

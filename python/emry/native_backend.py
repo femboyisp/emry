@@ -96,6 +96,8 @@ class NativeBackend:  # pragma: no cover - requires the compiled extension
         self._handle.emit(pairs)
 
     def finish(self, *, steps: int, reason: str) -> None:
-        # The native engine records COMPLETED; reason fidelity for the native
-        # path is a follow-up (the Rust RunHandle::finish has no reason arg yet).
+        # `steps` is intentionally ignored: the Rust engine owns the authoritative
+        # step counter and writes it into summary.json. `reason` is also dropped
+        # for now — the native engine records COMPLETED (reason fidelity is a
+        # follow-up; RunHandle::finish has no reason arg yet).
         self._handle.finish()
