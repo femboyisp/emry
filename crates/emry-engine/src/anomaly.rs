@@ -133,9 +133,13 @@ impl AnomalyDetector {
         #[allow(clippy::cast_precision_loss)] // window length is small and bounded
         let count = n as f64;
         let mean = self.window.iter().sum::<f64>() / count;
-        let variance = self.window.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
+        // Sample variance (Bessel's n-1), consistent with the Welford processor.
+        // MIN_SAMPLES >= 2 guarantees count - 1.0 > 0.
+        let variance = self.window.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (count - 1.0);
         let std = variance.sqrt();
-        if std <= 0.0 {
+        // Guard a (near-)flat window: no meaningful spread means no z-score, and
+        // it avoids amplifying float-cancellation noise into a false spike.
+        if std < f64::EPSILON {
             return None;
         }
         Some((value - mean) / std)
@@ -238,11 +242,14 @@ mod tests {
 
     #[test]
     fn flat_window_has_no_spread_so_no_false_spike() {
-        // All identical values -> std 0 -> z_score returns None, no divide-by-0.
+        // Strictly identical values (no jitter) -> variance 0 -> the zero-std
+        // guard fires, so z_score returns None and there's no divide-by-zero.
         let mut det = AnomalyDetector::with_config(TARGET, "Loss", 10, 4.0);
-        prime(&mut det, 8, 5.0);
-        // Next identical value: std still 0, no alert.
-        assert!(det.detect(&metric(5.0, 8)).is_empty());
+        for step in 0..8 {
+            assert!(det.detect(&metric(5.0, step)).is_empty());
+        }
+        // Even a large jump can't be scored against a zero-spread history.
+        assert!(det.detect(&metric(500.0, 8)).is_empty());
     }
 
     #[test]
