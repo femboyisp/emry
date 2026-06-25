@@ -3,6 +3,7 @@
 pub mod anomaly;
 pub mod pipeline;
 pub mod processor;
+pub mod session;
 pub mod stats;
 pub mod throughput;
 
@@ -10,5 +11,6 @@ pub use anomaly::AnomalyDetector;
 pub use emry_core::{EmryError, Phase, RunMeta};
 pub use pipeline::{Pipeline, PipelineStats};
 pub use processor::{DerivedMetric, Processor};
+pub use session::{Engine, RunConfig, RunHandle};
 pub use stats::{Ema, Welford};
 pub use throughput::Throughput;

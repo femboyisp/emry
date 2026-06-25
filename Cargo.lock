@@ -157,6 +157,9 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "emry-core",
+ "emry-store",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
