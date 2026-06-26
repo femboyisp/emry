@@ -16,3 +16,10 @@ emry-store = { path = "../emry-store" }
 crossbeam-channel.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "emit"
+harness = false
