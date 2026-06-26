@@ -101,6 +101,17 @@ pub enum ExportFormat {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Export a run's `metrics.jsonl` as Parquet (requires the `parquet` build
+    /// feature).
+    #[cfg(feature = "parquet")]
+    Parquet {
+        /// Run directory (or a `metrics.jsonl` file directly).
+        #[arg(long)]
+        run_dir: PathBuf,
+        /// Output Parquet file.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 /// Parses the process arguments and runs the selected command.
@@ -340,8 +351,15 @@ fn cmd_web(
 
 /// `emry export` — dispatch to the selected output format.
 fn cmd_export(format: ExportFormat) -> Result<(), Box<dyn Error>> {
-    let ExportFormat::Csv { run_dir, output } = format;
-    cmd_export_csv(&run_dir, output.as_deref())
+    match format {
+        ExportFormat::Csv { run_dir, output } => cmd_export_csv(&run_dir, output.as_deref()),
+        #[cfg(feature = "parquet")]
+        ExportFormat::Parquet { run_dir, output } => {
+            let rows = emry_store::export_parquet(&run_dir, &output)?;
+            eprintln!("emry: wrote {rows} rows to {}", output.display());
+            Ok(())
+        }
+    }
 }
 
 /// `emry export csv` — write a run's `metrics.jsonl` as CSV to a file or stdout.

@@ -10,6 +10,10 @@ description = "Emry training observability — CLI binary"
 [lints]
 workspace = true
 
+[features]
+# Enables `emry export parquet` (pulls in arrow + parquet via emry-store).
+parquet = ["emry-store/parquet"]
+
 [lib]
 name = "emry_cli"
 path = "src/lib.rs"
