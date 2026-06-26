@@ -14,6 +14,7 @@ use emry_store::JsonlSink;
 use emry_tui::{run_terminal, UiState};
 use std::error::Error;
 use std::io::BufReader;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,6 +53,21 @@ pub enum Commands {
         /// Run directory (or a `metrics.jsonl` file directly).
         path: PathBuf,
     },
+    /// Serve the live web dashboard for a run directory or sidecar socket.
+    Web {
+        /// Run directory to tail (`metrics.jsonl` inside it).
+        #[arg(long)]
+        run_dir: Option<PathBuf>,
+        /// Sidecar socket to read events from.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// TCP port to bind on `127.0.0.1`.
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+        /// Prior run directory (or `metrics.jsonl`) to overlay as a baseline.
+        #[arg(long)]
+        compare: Option<PathBuf>,
+    },
     /// Run the sidecar engine: receive events over a socket and persist them.
     Engine {
         /// Project / experiment name (names the run directory).
@@ -83,6 +99,17 @@ fn dispatch(command: Commands) -> ExitCode {
         Commands::Demo { steps } => cmd_demo(steps),
         Commands::Watch { path } => cmd_watch(&path),
         Commands::Tui { run_dir, socket } => cmd_tui(run_dir.as_deref(), socket.as_deref()),
+        Commands::Web {
+            run_dir,
+            socket,
+            port,
+            compare,
+        } => cmd_web(
+            run_dir.as_deref(),
+            socket.as_deref(),
+            port,
+            compare.as_deref(),
+        ),
         Commands::Engine {
             project,
             socket,
@@ -154,6 +181,26 @@ fn cmd_demo(steps: u64) -> Result<(), Box<dyn Error>> {
 /// name-table protocol exists (a future `MetricRegistered` event); in practice
 /// metrics are registered at run start, so they are present in the first poll.
 fn cmd_watch(path: &Path) -> Result<(), Box<dyn Error>> {
+    let (rx, labels, stop, poller) = spawn_run_dir_tailer(path)?;
+    let result = run_dashboard(&rx, &labels);
+    stop.store(true, Ordering::Release);
+    let _ = poller.join();
+    result
+}
+
+/// The pieces of a running run-directory tailer: the event receiver, the metric
+/// labels learned from the initial poll, and a stop flag + handle to shut the
+/// background poller down.
+type RunDirTailer = (
+    Receiver<Event>,
+    Vec<(MetricId, String)>,
+    Arc<AtomicBool>,
+    std::thread::JoinHandle<()>,
+);
+
+/// Spawns a background thread tailing a run directory's `metrics.jsonl` into a
+/// bounded channel, returning the [`RunDirTailer`] pieces.
+fn spawn_run_dir_tailer(path: &Path) -> Result<RunDirTailer, Box<dyn Error>> {
     let metrics = if path.is_dir() {
         path.join(emry_store::METRICS_FILE)
     } else {
@@ -184,11 +231,7 @@ fn cmd_watch(path: &Path) -> Result<(), Box<dyn Error>> {
             }
         })
     };
-
-    let result = run_dashboard(&rx, &labels);
-    stop.store(true, Ordering::Release);
-    let _ = poller.join();
-    result
+    Ok((rx, labels, stop, poller))
 }
 
 /// `emry tui` — attach to a run directory (`--run-dir`) or a socket (`--socket`).
@@ -202,19 +245,65 @@ fn cmd_tui(run_dir: Option<&Path>, socket: Option<&Path>) -> Result<(), Box<dyn 
 
 /// Reads framed events from a sidecar socket into the dashboard.
 fn cmd_socket_tui(sock: &Path) -> Result<(), Box<dyn Error>> {
+    let rx = spawn_socket_reader(sock)?;
+    // Socket frames carry MetricIds, not names; labels fall back to `m{id}`.
+    run_dashboard(&rx, &[])
+}
+
+/// Connects to a sidecar socket and drains framed events into a bounded channel
+/// on a detached reader thread.
+fn spawn_socket_reader(sock: &Path) -> Result<Receiver<Event>, Box<dyn Error>> {
     let stream = socket::connect(sock)?;
     let (tx, rx) = bounded::<Event>(8192);
     // Detached: this thread parks in the blocking `read_frame`, which a join
     // could not interrupt once the sender goes quiet. It is not a busy loop, and
-    // the OS reaps it when the process exits after the dashboard returns.
+    // the OS reaps it when the process exits.
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         while let Ok(Some(event)) = read_frame(&mut reader) {
             let _ = tx.try_send(event);
         }
     });
-    // Socket frames carry MetricIds, not names; labels fall back to `m{id}`.
-    run_dashboard(&rx, &[])
+    Ok(rx)
+}
+
+/// `emry web` — serve the live dashboard for a run directory (`--run-dir`) or a
+/// sidecar socket (`--socket`), optionally overlaying a `--compare` baseline.
+fn cmd_web(
+    run_dir: Option<&Path>,
+    socket: Option<&Path>,
+    port: u16,
+    compare: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
+    let (rx, labels) = match (run_dir, socket) {
+        (Some(dir), _) => {
+            // The poller runs for the server's lifetime; the OS reaps it on exit.
+            let (rx, labels, _stop, _poller) = spawn_run_dir_tailer(dir)?;
+            (rx, labels)
+        }
+        (None, Some(sock)) => (spawn_socket_reader(sock)?, Vec::new()),
+        (None, None) => return Err("specify --run-dir or --socket".into()),
+    };
+    let baseline = match compare {
+        Some(path) => Some(emry_web::load_baseline(path)?),
+        None => None,
+    };
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let label_refs: Vec<(MetricId, &str)> = labels
+        .iter()
+        .map(|(id, name)| (*id, name.as_str()))
+        .collect();
+    eprintln!("emry web on http://{addr}");
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async move {
+        match baseline {
+            Some(baseline) => emry_web::serve_with_baseline(addr, rx, &label_refs, baseline).await,
+            None => emry_web::serve_with_labels(addr, rx, &label_refs).await,
+        }
+    })?;
+    Ok(())
 }
 
 /// `emry engine --socket PATH` — receive events over a socket and persist them.
@@ -367,6 +456,52 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn web_defaults_port_and_accepts_flags() {
+        match parse(&["emry", "web"]).unwrap() {
+            Commands::Web {
+                run_dir,
+                socket,
+                port,
+                compare,
+            } => {
+                assert_eq!(port, 8787);
+                assert!(run_dir.is_none() && socket.is_none() && compare.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match parse(&[
+            "emry",
+            "web",
+            "--run-dir",
+            "./logs/run",
+            "--port",
+            "9000",
+            "--compare",
+            "./logs/old",
+        ])
+        .unwrap()
+        {
+            Commands::Web {
+                run_dir,
+                port,
+                compare,
+                ..
+            } => {
+                assert_eq!(run_dir, Some(PathBuf::from("./logs/run")));
+                assert_eq!(port, 9000);
+                assert_eq!(compare, Some(PathBuf::from("./logs/old")));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_with_no_target_errors() {
+        // Pure validation path (no runtime started): both targets absent errors.
+        assert!(cmd_web(None, None, 8787, None).is_err());
     }
 
     #[test]

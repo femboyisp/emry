@@ -386,6 +386,8 @@ dependencies = [
  "emry-ingest",
  "emry-store",
  "emry-tui",
+ "emry-web",
+ "tokio",
 ]
 
 [[package]]
