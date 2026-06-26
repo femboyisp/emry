@@ -75,11 +75,15 @@ export EMRY_MODE=sidecar
 export EMRY_SOCKET="$TMPDIR/emry.sock"
 ```
 
-| Variable        | Purpose                                                        |
-| --------------- | ------------------------------------------------------------- |
-| `EMRY_MODE`     | `embedded` \| `sidecar` \| `file`. Overrides auto-detection.  |
-| `EMRY_SOCKET`   | Socket path the SDK connects to in sidecar mode.              |
-| `EMRY_LOG_DIR`  | Base log dir for file-mode / fallback run directories.        |
+| Variable      | Purpose                                                       |
+| ------------- | ------------------------------------------------------------- |
+| `EMRY_MODE`   | `embedded` \| `sidecar` \| `file`. Overrides auto-detection.  |
+| `EMRY_SOCKET` | Socket path the SDK connects to in sidecar mode.              |
+
+To choose where file-mode / fallback run directories are written, pass
+`log_dir=` to `emry.run(...)` (the SDK defaults to `./logs` in the working
+directory). The sidecar engine's own output location is set with the
+`emry engine --log-dir` flag, as above.
 
 Your training code is unchanged across modes:
 
@@ -89,7 +93,7 @@ import emry
 with emry.run("llama-sft", config={"lr": 3e-4}) as run:
     for step in range(steps):
         loss = train_step()
-        run.emit({"loss": loss, "lr": sched.get_last_lr()[0]})
+        run.emit(loss=loss, lr=sched.get_last_lr()[0])
 ```
 
 ## 3. Putting it in a batch script
@@ -159,12 +163,20 @@ directory name.
 ## Alternative: file mode (no engine)
 
 For multi-node jobs, or when you want the fewest moving parts, skip the engine
-entirely and write JSONL directly:
+entirely and write JSONL directly. Set the mode in the environment and choose
+the output location with `log_dir=` in your script:
 
 ```bash
 export EMRY_MODE=file
-export EMRY_LOG_DIR="$SCRATCH/emry-logs"
 srun python train.py
+```
+
+```python
+import os, emry
+
+with emry.run("llama-sft", config={"lr": 3e-4},
+              log_dir=os.path.join(os.environ["SCRATCH"], "emry-logs")) as run:
+    ...
 ```
 
 Then observe from the login node exactly as above (`emry watch` / `emry web`
