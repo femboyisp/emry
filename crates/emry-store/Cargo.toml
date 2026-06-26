@@ -21,9 +21,9 @@ serde.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true
 uuid.workspace = true
-arrow-array = { version = "53", optional = true }
-arrow-schema = { version = "53", optional = true }
-parquet = { version = "53", optional = true, default-features = false, features = ["arrow"] }
+arrow-array = { version = "59", optional = true }
+arrow-schema = { version = "59", optional = true }
+parquet = { version = "59", optional = true, default-features = false, features = ["arrow"] }
 
 [dev-dependencies]
 criterion.workspace = true
