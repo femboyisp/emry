@@ -275,10 +275,13 @@ fn cmd_web(
     port: u16,
     compare: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
+    // Holds the run-dir poller's stop flag + handle so it can be shut down on
+    // return (including an early bind error) rather than leaked.
+    let mut tailer_shutdown: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
     let (rx, labels) = match (run_dir, socket) {
         (Some(dir), _) => {
-            // The poller runs for the server's lifetime; the OS reaps it on exit.
-            let (rx, labels, _stop, _poller) = spawn_run_dir_tailer(dir)?;
+            let (rx, labels, stop, poller) = spawn_run_dir_tailer(dir)?;
+            tailer_shutdown = Some((stop, poller));
             (rx, labels)
         }
         (None, Some(sock)) => (spawn_socket_reader(sock)?, Vec::new()),
@@ -297,12 +300,19 @@ fn cmd_web(
     eprintln!("emry web on http://{addr}");
 
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move {
+    let result = runtime.block_on(async move {
         match baseline {
             Some(baseline) => emry_web::serve_with_baseline(addr, rx, &label_refs, baseline).await,
             None => emry_web::serve_with_labels(addr, rx, &label_refs).await,
         }
-    })?;
+    });
+
+    // Stop the poller (if any) so it does not outlive the server.
+    if let Some((stop, poller)) = tailer_shutdown {
+        stop.store(true, Ordering::Release);
+        let _ = poller.join();
+    }
+    result?;
     Ok(())
 }
 
