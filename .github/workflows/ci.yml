@@ -12,7 +12,7 @@ env:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +22,8 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
@@ -54,6 +56,8 @@ jobs:
           toolchain: "1.87"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - uses: actions/setup-python@v5
         with:
@@ -66,7 +70,7 @@ jobs:
         run: pytest
 
   wheels:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -75,6 +79,8 @@ jobs:
           toolchain: "1.87"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - uses: actions/setup-python@v5
         with:
@@ -98,7 +104,7 @@ jobs:
           path: dist/*
 
   pre-commit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -108,6 +114,8 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
