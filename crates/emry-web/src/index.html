@@ -112,6 +112,7 @@
       const C = {
         cream: "#f5f0e8",
         terracotta: "#c4714a",
+        amber: "#d99a4a",
         gray: "#6b6560",
       };
       const els = {
@@ -127,6 +128,22 @@
       const ctx = els.canvas.getContext("2d");
       let selected = null; // selected metric label
       let latestState = null;
+      let baseline = null; // { metrics: [{ label, steps, values }] } — comparison run
+
+      // Fetch the comparison baseline once on load (empty {metrics:[]} if none).
+      fetch("/baseline")
+        .then((r) => r.json())
+        .then((b) => {
+          baseline = b && b.metrics && b.metrics.length ? b : null;
+          render();
+        })
+        .catch(() => {});
+
+      // Returns the baseline series matching `label`, or null.
+      function baselineFor(label) {
+        if (!baseline) return null;
+        return baseline.metrics.find((m) => m.label === label) || null;
+      }
 
       // Per-phase background tints (TRAIN = none).
       const PHASE_TINT = {
@@ -143,6 +160,23 @@
         if (!metric || !metric.history || metric.history.length === 0) return;
         const data = metric.history.slice(-WINDOW);
         const steps = (metric.steps || []).slice(-WINDOW);
+        const pad = 24;
+        // Step-based x-axis over the visible window.
+        const s0 = steps.length ? steps[0] : 0;
+        const s1 = steps.length ? steps[steps.length - 1] : data.length - 1;
+        const stepSpan = s1 - s0 || 1;
+
+        // Baseline points whose step falls inside the visible window — drawn as
+        // a dashed overlay and included in the y-scale so both curves align.
+        const base = baselineFor(metric.label);
+        const baseWin = [];
+        if (base) {
+          for (let i = 0; i < base.steps.length; i++) {
+            const st = base.steps[i];
+            if (st >= s0 && st <= s1) baseWin.push([st, base.values[i]]);
+          }
+        }
+
         let min = Infinity,
           max = -Infinity;
         for (const v of data) {
@@ -151,13 +185,14 @@
             if (v > max) max = v;
           }
         }
+        for (const [, v] of baseWin) {
+          if (Number.isFinite(v)) {
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+        }
         if (!Number.isFinite(min)) return;
         const span = max - min || 1;
-        const pad = 24;
-        // Step-based x-axis over the visible window.
-        const s0 = steps.length ? steps[0] : 0;
-        const s1 = steps.length ? steps[steps.length - 1] : data.length - 1;
-        const stepSpan = s1 - s0 || 1;
         const xStep = (st) => pad + ((st - s0) / stepSpan) * (w - 2 * pad);
         const xIdx = (i) => xStep(steps.length ? steps[i] : i);
         const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
@@ -199,6 +234,20 @@
         ctx.lineTo(w - pad, y(max));
         ctx.stroke();
         ctx.globalAlpha = 1;
+        // baseline (comparison run): dashed amber line behind the live curve
+        if (baseWin.length) {
+          ctx.save();
+          ctx.setLineDash([5, 4]);
+          ctx.strokeStyle = C.amber;
+          ctx.lineWidth = 1.25;
+          ctx.globalAlpha = 0.85;
+          ctx.beginPath();
+          baseWin.forEach(([st, v], i) =>
+            i ? ctx.lineTo(xStep(st), y(v)) : ctx.moveTo(xStep(st), y(v)),
+          );
+          ctx.stroke();
+          ctx.restore();
+        }
         // the line
         ctx.strokeStyle = C.terracotta;
         ctx.lineWidth = 1.5;
@@ -252,8 +301,9 @@
         els.status.textContent = s.finished ? "finished" : "running";
         renderCards(s.metrics || []);
         const metric = (s.metrics || []).find((m) => m.label === selected);
+        const cmp = metric && baselineFor(metric.label) ? "  ·  ⸺ ⸺ baseline" : "";
         els.chartTitle.textContent = metric
-          ? `${metric.label} (latest ${Number(metric.latest).toPrecision(5)})`
+          ? `${metric.label} (latest ${Number(metric.latest).toPrecision(5)})${cmp}`
           : "—";
         drawChart(metric, s);
         const a = s.alerts && s.alerts.length ? s.alerts[s.alerts.length - 1] : null;
