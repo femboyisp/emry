@@ -1,0 +1,59 @@
+name: Release
+
+# Builds the sdist + manylinux abi3 wheel and publishes to PyPI when a version
+# tag is pushed. Publishing uses PyPI Trusted Publishing (OIDC) — no API token
+# is stored; the `pypi` environment + `id-token: write` authorize the upload.
+#
+# To cut a release: bump the version, then `git tag v0.1.0 && git push --tags`.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # maturin-action builds inside a manylinux container so the abi3 wheel is
+      # PyPI-acceptable (a bare `maturin build` would emit a linux_x86_64 wheel
+      # that PyPI rejects).
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          manylinux: auto
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment: pypi
+    permissions:
+      id-token: write # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

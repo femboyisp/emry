@@ -12,7 +12,7 @@ env:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -22,6 +22,8 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
@@ -39,7 +41,11 @@ jobs:
         run: ./scripts/check-coverage.sh
 
   python:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
@@ -50,10 +56,12 @@ jobs:
           toolchain: "1.87"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install (builds the native extension via maturin)
         run: pip install -e ".[dev]"
@@ -62,7 +70,7 @@ jobs:
         run: pytest
 
   wheels:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +79,8 @@ jobs:
           toolchain: "1.87"
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - uses: actions/setup-python@v5
         with:
@@ -94,7 +104,7 @@ jobs:
           path: dist/*
 
   pre-commit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -104,6 +114,8 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
