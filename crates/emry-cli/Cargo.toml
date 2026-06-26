@@ -24,5 +24,7 @@ emry-core = { path = "../emry-core" }
 emry-engine = { path = "../emry-engine" }
 emry-store = { path = "../emry-store" }
 emry-tui = { path = "../emry-tui" }
+emry-web = { path = "../emry-web" }
 emry-ingest = { path = "../emry-ingest" }
 crossbeam-channel.workspace = true
+tokio.workspace = true
