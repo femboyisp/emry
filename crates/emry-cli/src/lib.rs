@@ -68,6 +68,12 @@ pub enum Commands {
         #[arg(long)]
         compare: Option<PathBuf>,
     },
+    /// Export a run's metrics to another format.
+    Export {
+        /// Output format.
+        #[command(subcommand)]
+        format: ExportFormat,
+    },
     /// Run the sidecar engine: receive events over a socket and persist them.
     Engine {
         /// Project / experiment name (names the run directory).
@@ -79,6 +85,21 @@ pub enum Commands {
         /// Base log directory (default `./logs`).
         #[arg(long)]
         log_dir: Option<PathBuf>,
+    },
+}
+
+/// Output formats for `emry export`.
+#[derive(Debug, Subcommand)]
+pub enum ExportFormat {
+    /// Export a run's `metrics.jsonl` as CSV (wide rows: step, epoch, phase,
+    /// then one column per metric).
+    Csv {
+        /// Run directory (or a `metrics.jsonl` file directly).
+        #[arg(long)]
+        run_dir: PathBuf,
+        /// Output file (defaults to stdout).
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -110,6 +131,7 @@ fn dispatch(command: Commands) -> ExitCode {
             port,
             compare.as_deref(),
         ),
+        Commands::Export { format } => cmd_export(format),
         Commands::Engine {
             project,
             socket,
@@ -316,6 +338,26 @@ fn cmd_web(
     Ok(())
 }
 
+/// `emry export` — dispatch to the selected output format.
+fn cmd_export(format: ExportFormat) -> Result<(), Box<dyn Error>> {
+    let ExportFormat::Csv { run_dir, output } = format;
+    cmd_export_csv(&run_dir, output.as_deref())
+}
+
+/// `emry export csv` — write a run's `metrics.jsonl` as CSV to a file or stdout.
+fn cmd_export_csv(run_dir: &Path, output: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    if let Some(path) = output {
+        let mut file = std::fs::File::create(path)?;
+        let rows = emry_store::export_csv(run_dir, &mut file)?;
+        eprintln!("emry: wrote {rows} rows to {}", path.display());
+    } else {
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        emry_store::export_csv(run_dir, &mut lock)?;
+    }
+    Ok(())
+}
+
 /// `emry engine --socket PATH` — receive events over a socket and persist them.
 fn cmd_engine(
     project: &str,
@@ -512,6 +554,39 @@ mod tests {
     fn web_with_no_target_errors() {
         // Pure validation path (no runtime started): both targets absent errors.
         assert!(cmd_web(None, None, 8787, None).is_err());
+    }
+
+    #[test]
+    fn export_csv_parses_and_requires_run_dir() {
+        assert!(parse(&["emry", "export", "csv"]).is_err());
+        match parse(&["emry", "export", "csv", "--run-dir", "./logs/run"]).unwrap() {
+            Commands::Export {
+                format: ExportFormat::Csv { run_dir, output },
+            } => {
+                assert_eq!(run_dir, PathBuf::from("./logs/run"));
+                assert!(output.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_csv_writes_a_file() {
+        use std::sync::atomic::AtomicU32;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("emry-cli-csv-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(emry_store::METRICS_FILE),
+            "{\"step\":0,\"epoch\":0,\"phase\":\"TRAIN\",\"values\":{\"loss\":0.5}}\n",
+        )
+        .unwrap();
+        let out = dir.join("metrics.csv");
+        cmd_export_csv(&dir, Some(&out)).unwrap();
+        let csv = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(csv, "step,epoch,phase,loss\n0,0,TRAIN,0.5\n");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
