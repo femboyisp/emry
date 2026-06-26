@@ -122,6 +122,18 @@ fn to_io<E: std::error::Error + Send + Sync + 'static>(err: E) -> EmryError {
 /// a valid [`MetricRecord`].
 #[cfg(feature = "parquet")]
 pub fn export_parquet(path: &Path, out_path: &Path) -> Result<usize, EmryError> {
+    // A failure mid-stream (disk-full write, input I/O error) would otherwise
+    // leave a truncated, footerless Parquet file that no reader can open. Remove
+    // the output on any error so the user is not left with a corrupt artifact.
+    let result = write_parquet(path, out_path);
+    if result.is_err() {
+        let _ = std::fs::remove_file(out_path);
+    }
+    result
+}
+
+#[cfg(feature = "parquet")]
+fn write_parquet(path: &Path, out_path: &Path) -> Result<usize, EmryError> {
     use arrow_array::builder::{Float64Builder, StringBuilder, UInt32Builder, UInt64Builder};
     use arrow_array::{ArrayRef, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
