@@ -8,16 +8,10 @@ flow through a lock-free ring into an event-sourced engine that persists an
 append-only log and serves a live dashboard. No accounts, no phone-home — just
 your metrics, on your machine, in a file you can read.
 
-```text
-  loss
-  2.3 ┤╮
-      │╰─╮
-  1.2 ┤  ╰──╮___
-      │       ╰──────╮________
-  0.3 ┤                       ╰──────────────────  ← live, in your terminal
-      └────────────────────────────────────────
-      0                                    12.4k steps
-```
+![Emry's terminal dashboard streaming a live training run](docs/emry/assets/tui.gif)
+
+<sub>The terminal dashboard (`emry watch`) — live loss curve, metric cards,
+phase, and alerts. There's a matching self-hosted web dashboard (`emry web`).</sub>
 
 - **Stays out of the way.** `emit()` targets well under 10 µs amortized (tens of
   nanoseconds in our benchmarks) and never blocks the training thread — every

@@ -14,7 +14,8 @@ repos:
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
-        args: [--maxkb=1000]
+        # Raised to fit the README demo GIFs under docs/emry/assets/.
+        args: [--maxkb=5000]
 
   - repo: local
     hooks:
