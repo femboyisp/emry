@@ -10,9 +10,17 @@ description = "Emry training observability — emry-store"
 [lints]
 workspace = true
 
+[features]
+# Parquet export pulls in arrow + parquet; off by default to keep the base
+# build (and its dependency tree / compile time) lean.
+parquet = ["dep:arrow-array", "dep:arrow-schema", "dep:parquet"]
+
 [dependencies]
 emry-core = { path = "../emry-core" }
 serde.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true
 uuid.workspace = true
+arrow-array = { version = "53", optional = true }
+arrow-schema = { version = "53", optional = true }
+parquet = { version = "53", optional = true, default-features = false, features = ["arrow"] }
