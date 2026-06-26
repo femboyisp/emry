@@ -19,9 +19,10 @@ your metrics, on your machine, in a file you can read.
       0                                    12.4k steps
 ```
 
-- **Stays out of the way.** `emit()` is ~25 ns and never blocks the training
-  thread — every queue is bounded and drops-and-counts under load, so
-  observability can never harm the run.
+- **Stays out of the way.** `emit()` targets well under 10 µs amortized (tens of
+  nanoseconds in our benchmarks) and never blocks the training thread — every
+  queue is bounded and drops-and-counts under load, so observability can never
+  harm the run.
 - **Event-sourced.** An append-only `events.jsonl` is the audit trail; a wide
   `metrics.jsonl` is plain JSONL you can read with `jq`, pandas, or anything.
 - **Observe live or after the fact.** A terminal dashboard, a self-hosted web
@@ -55,8 +56,9 @@ the epoch automatically. Values are duck-typed — tensors and numpy scalars are
 coerced, so you can pass `loss` directly without `.item()`.
 
 By default Emry writes a run directory under `./logs/` and, when attached to a
-TTY, brings up a live dashboard. Set `EMRY_MODE` (`embedded` | `sidecar` |
-`file`) to control how it runs.
+TTY, brings up the live terminal dashboard. Set `EMRY_MODE` (`embedded` |
+`sidecar` | `file`) to control how it runs, or observe any run after the fact
+with the commands below.
 
 ## Observe a run
 
