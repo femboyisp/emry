@@ -2,6 +2,11 @@
 
 **Gentle observability for long training runs.**
 
+[![CI](https://github.com/femboyisp/emry/actions/workflows/ci.yml/badge.svg)](https://github.com/femboyisp/emry/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/emry.svg)](https://pypi.org/project/emry/)
+[![Python](https://img.shields.io/pypi/pyversions/emry.svg)](https://pypi.org/project/emry/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 Emry watches your training run the way you'd want a good colleague to: quietly,
 without ever getting in the way. A training loop calls `run.emit()`; metrics
 flow through a lock-free ring into an event-sourced engine that persists an
