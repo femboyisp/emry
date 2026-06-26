@@ -418,6 +418,9 @@ fn format_compare(
             |n| n.to_string_lossy().into_owned(),
         )
     };
+    if a.is_empty() && b.is_empty() {
+        return "no metrics found\n".to_string();
+    }
     // Union of metric names, sorted (BTreeMap keys are already ordered).
     let mut names: Vec<&String> = a.keys().chain(b.keys()).collect();
     names.sort_unstable();
@@ -453,7 +456,7 @@ fn format_compare(
 /// Renders `headers` + `rows` as a left-aligned, space-padded table. Each row is
 /// a fixed-width array matching the header count.
 fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {
-    let mut widths = headers.map(str::len);
+    let mut widths = headers.map(|h| h.chars().count());
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
             widths[i] = widths[i].max(cell.chars().count());
@@ -810,6 +813,29 @@ mod tests {
         // only_a present in one → delta is "-".
         let only = lines.iter().find(|l| l.starts_with("only_a")).unwrap();
         assert!(only.contains("5.000000"));
+    }
+
+    #[test]
+    fn format_compare_empty_and_delta_column_aligns() {
+        let empty = std::collections::BTreeMap::new();
+        assert_eq!(
+            format_compare(Path::new("a"), Path::new("b"), &empty, &empty),
+            "no metrics found\n"
+        );
+
+        // The Δ header (U+0394, 2 bytes / 1 char) must not over-pad the column:
+        // each row's first space-separated token after the value should align.
+        let mut a = std::collections::BTreeMap::new();
+        a.insert("loss".to_string(), 1.0);
+        let mut b = std::collections::BTreeMap::new();
+        b.insert("loss".to_string(), 2.0);
+        let table = format_compare(Path::new("a"), Path::new("b"), &a, &b);
+        let lines: Vec<&str> = table.lines().collect();
+        // Δ is the last column, so header and row share the same prefix width up
+        // to it: the byte length of the header line equals char-aligned layout.
+        assert_eq!(lines[0].chars().filter(|c| *c == 'Δ').count(), 1);
+        // The metric/value columns line up: "loss" row and header start aligned.
+        assert!(lines[1].starts_with("loss"));
     }
 
     #[test]
