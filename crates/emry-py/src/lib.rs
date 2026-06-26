@@ -71,7 +71,7 @@ mod native {
                 .map(|(id, v)| (emry_core::MetricId(id), v))
                 .collect();
             let handle = self.inner.as_mut().ok_or_else(finished_err)?;
-            py.allow_threads(|| handle.emit(&pairs));
+            py.detach(|| handle.emit(&pairs));
             Ok(())
         }
 
@@ -80,7 +80,7 @@ mod native {
         #[allow(clippy::needless_pass_by_value)]
         fn emit_dynamic(&mut self, py: Python<'_>, values: HashMap<String, f64>) -> PyResult<()> {
             let handle = self.inner.as_mut().ok_or_else(finished_err)?;
-            py.allow_threads(|| handle.emit_dynamic(&values));
+            py.detach(|| handle.emit_dynamic(&values));
             Ok(())
         }
 
@@ -112,7 +112,7 @@ mod native {
         /// while the worker drains.
         fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
             if let Some(handle) = self.inner.take() {
-                py.allow_threads(|| handle.finish())
+                py.detach(|| handle.finish())
                     .map_err(|e| PyErr::new::<pyo3::exceptions::PyOSError, _>(e.to_string()))?;
             }
             Ok(())
