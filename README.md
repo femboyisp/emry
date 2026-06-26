@@ -11,7 +11,13 @@ your metrics, on your machine, in a file you can read.
 ![Emry's terminal dashboard streaming a live training run](docs/emry/assets/tui.gif)
 
 <sub>The terminal dashboard (`emry watch`) — live loss curve, metric cards,
-phase, and alerts. There's a matching self-hosted web dashboard (`emry web`).</sub>
+phase, and alerts.</sub>
+
+![Emry's web dashboard with a live loss curve, baseline overlay, phase bands and checkpoint markers](docs/emry/assets/web.gif)
+
+<sub>The self-hosted web dashboard (`emry web`) — live chart with a dashed
+baseline overlay for run comparison, phase bands, and checkpoint markers. No
+CDN; works air-gapped.</sub>
 
 - **Stays out of the way.** `emit()` targets well under 10 µs amortized (tens of
   nanoseconds in our benchmarks) and never blocks the training thread — every
