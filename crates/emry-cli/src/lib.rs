@@ -68,6 +68,19 @@ pub enum Commands {
         #[arg(long)]
         compare: Option<PathBuf>,
     },
+    /// List the runs found under a log directory.
+    Runs {
+        /// Base log directory to scan (default `./logs`).
+        #[arg(long)]
+        log_dir: Option<PathBuf>,
+    },
+    /// Compare the final metrics of two runs side by side.
+    Compare {
+        /// First run directory (or its `metrics.jsonl`).
+        run_a: PathBuf,
+        /// Second run directory (or its `metrics.jsonl`).
+        run_b: PathBuf,
+    },
     /// Export a run's metrics to another format.
     Export {
         /// Output format.
@@ -142,6 +155,8 @@ fn dispatch(command: Commands) -> ExitCode {
             port,
             compare.as_deref(),
         ),
+        Commands::Runs { log_dir } => cmd_runs(log_dir.as_deref()),
+        Commands::Compare { run_a, run_b } => cmd_compare(&run_a, &run_b),
         Commands::Export { format } => cmd_export(format),
         Commands::Engine {
             project,
@@ -347,6 +362,127 @@ fn cmd_web(
     }
     result?;
     Ok(())
+}
+
+/// `emry runs` — list the runs under a log directory (default `./logs`).
+fn cmd_runs(log_dir: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let base = match log_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => std::env::current_dir()?.join("logs"),
+    };
+    let runs = emry_store::list_runs(&base)?;
+    print!("{}", format_runs(&runs));
+    Ok(())
+}
+
+/// Renders a run list as an aligned table (or a friendly note when empty).
+fn format_runs(runs: &[emry_store::RunInfo]) -> String {
+    if runs.is_empty() {
+        return "no runs found\n".to_string();
+    }
+    let rows: Vec<[String; 5]> = runs
+        .iter()
+        .map(|r| {
+            [
+                r.dir_name.clone(),
+                r.project.clone(),
+                r.steps.map_or_else(|| "-".to_string(), |s| s.to_string()),
+                r.reason.clone().unwrap_or_else(|| "running".to_string()),
+                r.duration_secs
+                    .map_or_else(|| "-".to_string(), |d| format!("{d:.1}s")),
+            ]
+        })
+        .collect();
+    let headers = ["RUN", "PROJECT", "STEPS", "STATUS", "DURATION"];
+    render_table(&headers, &rows)
+}
+
+/// `emry compare A B` — show each run's final metric values and their delta.
+fn cmd_compare(run_a: &Path, run_b: &Path) -> Result<(), Box<dyn Error>> {
+    let a = emry_store::final_metrics(run_a)?;
+    let b = emry_store::final_metrics(run_b)?;
+    print!("{}", format_compare(run_a, run_b, &a, &b));
+    Ok(())
+}
+
+/// Renders a side-by-side comparison of two runs' final metrics.
+fn format_compare(
+    run_a: &Path,
+    run_b: &Path,
+    a: &std::collections::BTreeMap<String, f64>,
+    b: &std::collections::BTreeMap<String, f64>,
+) -> String {
+    let label = |p: &Path| {
+        p.file_name().map_or_else(
+            || p.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    };
+    if a.is_empty() && b.is_empty() {
+        return "no metrics found\n".to_string();
+    }
+    // Union of metric names, sorted (BTreeMap keys are already ordered).
+    let mut names: Vec<&String> = a.keys().chain(b.keys()).collect();
+    names.sort_unstable();
+    names.dedup();
+
+    let fmt = |v: Option<&f64>| v.map_or_else(|| "-".to_string(), |x| format!("{x:.6}"));
+    let rows: Vec<[String; 4]> = names
+        .iter()
+        .map(|name| {
+            let (va, vb) = (a.get(*name), b.get(*name));
+            let delta = match (va, vb) {
+                (Some(x), Some(y)) => format!("{:+.6}", y - x),
+                _ => "-".to_string(),
+            };
+            [(*name).clone(), fmt(va), fmt(vb), delta]
+        })
+        .collect();
+    let headers = [
+        "METRIC".to_string(),
+        label(run_a),
+        label(run_b),
+        "Δ".to_string(),
+    ];
+    let header_refs = [
+        headers[0].as_str(),
+        headers[1].as_str(),
+        headers[2].as_str(),
+        headers[3].as_str(),
+    ];
+    render_table(&header_refs, &rows)
+}
+
+/// Renders `headers` + `rows` as a left-aligned, space-padded table. Each row is
+/// a fixed-width array matching the header count.
+fn render_table<const N: usize>(headers: &[&str; N], rows: &[[String; N]]) -> String {
+    let mut widths = headers.map(|h| h.chars().count());
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
+    }
+    let mut out = String::new();
+    let mut push_row = |cells: &[&str; N]| {
+        for (i, cell) in cells.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            out.push_str(cell);
+            if i + 1 < N {
+                for _ in cell.chars().count()..widths[i] {
+                    out.push(' ');
+                }
+            }
+        }
+        out.push('\n');
+    };
+    push_row(headers);
+    for row in rows {
+        let refs: [&str; N] = std::array::from_fn(|i| row[i].as_str());
+        push_row(&refs);
+    }
+    out
 }
 
 /// `emry export` — dispatch to the selected output format.
@@ -605,6 +741,101 @@ mod tests {
         let csv = std::fs::read_to_string(&out).unwrap();
         assert_eq!(csv, "step,epoch,phase,loss\n0,0,TRAIN,0.5\n");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn runs_and_compare_parse() {
+        match parse(&["emry", "runs"]).unwrap() {
+            Commands::Runs { log_dir } => assert!(log_dir.is_none()),
+            other => panic!("unexpected {other:?}"),
+        }
+        match parse(&["emry", "runs", "--log-dir", "/tmp/logs"]).unwrap() {
+            Commands::Runs { log_dir } => assert_eq!(log_dir, Some(PathBuf::from("/tmp/logs"))),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(parse(&["emry", "compare", "a"]).is_err()); // needs two runs
+        match parse(&["emry", "compare", "a", "b"]).unwrap() {
+            Commands::Compare { run_a, run_b } => {
+                assert_eq!(run_a, PathBuf::from("a"));
+                assert_eq!(run_b, PathBuf::from("b"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn format_runs_renders_table_and_empty_note() {
+        assert_eq!(format_runs(&[]), "no runs found\n");
+        let runs = vec![
+            emry_store::RunInfo {
+                dir_name: "llama_200".into(),
+                project: "llama".into(),
+                start_time_secs: 200.0,
+                steps: None,
+                duration_secs: None,
+                reason: None,
+            },
+            emry_store::RunInfo {
+                dir_name: "gpt_100".into(),
+                project: "gpt".into(),
+                start_time_secs: 100.0,
+                steps: Some(500),
+                duration_secs: Some(12.5),
+                reason: Some("COMPLETED".into()),
+            },
+        ];
+        let table = format_runs(&runs);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].starts_with("RUN"));
+        assert!(
+            lines[1].contains("llama") && lines[1].contains("running") && lines[1].contains('-')
+        );
+        assert!(lines[2].contains("gpt") && lines[2].contains("500") && lines[2].contains("12.5s"));
+    }
+
+    #[test]
+    fn format_compare_shows_values_and_delta() {
+        let mut a = std::collections::BTreeMap::new();
+        a.insert("loss".to_string(), 1.0);
+        a.insert("only_a".to_string(), 5.0);
+        let mut b = std::collections::BTreeMap::new();
+        b.insert("loss".to_string(), 0.4);
+        let table = format_compare(Path::new("runA"), Path::new("runB"), &a, &b);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(
+            lines[0].contains("METRIC") && lines[0].contains("runA") && lines[0].contains("runB")
+        );
+        // loss present in both → delta shown with sign.
+        let loss = lines.iter().find(|l| l.starts_with("loss")).unwrap();
+        assert!(
+            loss.contains("1.000000") && loss.contains("0.400000") && loss.contains("-0.600000")
+        );
+        // only_a present in one → delta is "-".
+        let only = lines.iter().find(|l| l.starts_with("only_a")).unwrap();
+        assert!(only.contains("5.000000"));
+    }
+
+    #[test]
+    fn format_compare_empty_and_delta_column_aligns() {
+        let empty = std::collections::BTreeMap::new();
+        assert_eq!(
+            format_compare(Path::new("a"), Path::new("b"), &empty, &empty),
+            "no metrics found\n"
+        );
+
+        // The Δ header (U+0394, 2 bytes / 1 char) must not over-pad the column:
+        // each row's first space-separated token after the value should align.
+        let mut a = std::collections::BTreeMap::new();
+        a.insert("loss".to_string(), 1.0);
+        let mut b = std::collections::BTreeMap::new();
+        b.insert("loss".to_string(), 2.0);
+        let table = format_compare(Path::new("a"), Path::new("b"), &a, &b);
+        let lines: Vec<&str> = table.lines().collect();
+        // Δ is the last column, so header and row share the same prefix width up
+        // to it: the byte length of the header line equals char-aligned layout.
+        assert_eq!(lines[0].chars().filter(|c| *c == 'Δ').count(), 1);
+        // The metric/value columns line up: "loss" row and header start aligned.
+        assert!(lines[1].starts_with("loss"));
     }
 
     #[test]
