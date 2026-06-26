@@ -61,3 +61,6 @@ manifest-path = "crates/emry-py/Cargo.toml"
 module-name = "emry._native"
 python-source = "python"
 features = ["extension-module"]
+# Bundle the license into the sdist so it sits at the path maturin records in
+# the metadata's `License-File: LICENSE` (PyPI rejects the upload otherwise).
+include = ["LICENSE"]
