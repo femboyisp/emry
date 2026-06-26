@@ -5,10 +5,15 @@
 //! can be loaded into pandas, a spreadsheet, or the prior generation's CSV
 //! tooling. Metric columns appear in first-seen order across the file; a row
 //! missing a given metric leaves that cell empty.
+//!
+//! Export streams the file in two passes (one to learn the columns, one to emit
+//! rows) so peak memory is proportional to the number of distinct metric names,
+//! not the row count — long runs have millions of rows.
 
 use emry_core::{EmryError, MetricRecord};
 use std::collections::HashSet;
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Lines, Write};
 use std::path::Path;
 
 use crate::writer::METRICS_FILE;
@@ -30,24 +35,22 @@ pub fn export_csv<W: Write>(path: &Path, out: &mut W) -> Result<usize, EmryError
     } else {
         path.to_path_buf()
     };
-    let text = std::fs::read_to_string(file)?;
 
-    // Pass 1: parse rows and learn the metric columns in first-seen order.
-    let mut records: Vec<MetricRecord> = Vec::new();
+    // Pass 1: learn the metric columns in first-seen order, retaining only names.
     let mut columns: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+    for line in open_lines(&file)? {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        let record: MetricRecord = serde_json::from_str(line)?;
+        let record: MetricRecord = serde_json::from_str(trimmed)?;
         for name in record.values.keys() {
             if seen.insert(name.clone()) {
                 columns.push(name.clone());
             }
         }
-        records.push(record);
     }
 
     // Header.
@@ -55,8 +58,16 @@ pub fn export_csv<W: Write>(path: &Path, out: &mut W) -> Result<usize, EmryError
     header.extend(columns.iter().cloned());
     write_row(out, &header)?;
 
-    // Pass 2: one CSV row per record, blank cells for absent metrics.
-    for record in &records {
+    // Pass 2: re-stream the file, one CSV row per record, blank cells for
+    // metrics absent from a row.
+    let mut rows = 0;
+    for line in open_lines(&file)? {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let record: MetricRecord = serde_json::from_str(trimmed)?;
         let mut fields = vec![
             record.step.to_string(),
             record.epoch.to_string(),
@@ -69,8 +80,14 @@ pub fn export_csv<W: Write>(path: &Path, out: &mut W) -> Result<usize, EmryError
             }
         }
         write_row(out, &fields)?;
+        rows += 1;
     }
-    Ok(records.len())
+    Ok(rows)
+}
+
+/// Opens `path` for buffered line-by-line reading.
+fn open_lines(path: &Path) -> Result<Lines<BufReader<File>>, EmryError> {
+    Ok(BufReader::new(File::open(path)?).lines())
 }
 
 /// Phase as its screaming-snake wire string (e.g. `TRAIN`).
@@ -81,8 +98,8 @@ fn phase_str(phase: emry_core::Phase) -> String {
         .unwrap_or_default()
 }
 
-/// Writes one CSV record (RFC 4180: comma-separated, `\n`-terminated, fields
-/// quoted only when they contain a comma, quote, CR, or LF).
+/// Writes one CSV record: comma-separated, LF-terminated, fields quoted (per
+/// RFC 4180 escaping) only when they contain a comma, quote, CR, or LF.
 fn write_row<W: Write>(out: &mut W, fields: &[String]) -> Result<(), EmryError> {
     for (i, field) in fields.iter().enumerate() {
         if i > 0 {
