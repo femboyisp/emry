@@ -16,5 +16,7 @@ venv/
 .mypy_cache/
 logs/
 
-# Local planning docs — not published to GitHub
-/docs/
+# Local planning docs — not published to GitHub (design.md, kanban.md, …).
+# The docs/emry/ subtree IS published (user-facing runbooks & guides).
+/docs/*
+!/docs/emry/
