@@ -24,3 +24,10 @@ uuid.workspace = true
 arrow-array = { version = "53", optional = true }
 arrow-schema = { version = "53", optional = true }
 parquet = { version = "53", optional = true, default-features = false, features = ["arrow"] }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "jsonl"
+harness = false
