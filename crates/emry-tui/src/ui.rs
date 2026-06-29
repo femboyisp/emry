@@ -26,6 +26,9 @@ pub const TERRACOTTA: Color = Color::Rgb(0xC4, 0x71, 0x4A);
 pub const WARM_GRAY: Color = Color::Rgb(0x6B, 0x65, 0x60);
 /// Amber accent — used for the comparison-baseline overlay.
 pub const AMBER: Color = Color::Rgb(0xD9, 0x9A, 0x4A);
+/// Warm near-black panel background (matches the web dashboard); painted so the
+/// dashboard is opaque rather than letting a transparent terminal show through.
+pub const BG: Color = Color::Rgb(0x1A, 0x17, 0x14);
 
 const DEFAULT_HISTORY: usize = 4096;
 const DEFAULT_ALERTS: usize = 5;
@@ -246,6 +249,9 @@ fn block(title: &str) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(WARM_GRAY))
+        // Opaque warm background so the panel doesn't show a transparent
+        // terminal through the empty (braille-blank) cells.
+        .style(Style::default().bg(BG))
         .title(Span::styled(
             format!(" {title} "),
             Style::default().fg(TERRACOTTA).add_modifier(Modifier::BOLD),
@@ -713,6 +719,25 @@ mod tests {
             buffer.content().iter().any(|c| c.bg == eval_bg),
             "EVAL phase band shaded a cell background"
         );
+    }
+
+    #[test]
+    fn dashboard_paints_opaque_background() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..20u64 {
+            s.apply(&batch(step, &[(0, 1.0 / (step as f64 + 1.0))]));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        // No cell is left on the terminal's default background — the whole
+        // dashboard is painted with the warm panel bg (so terminal transparency
+        // can't bleed through the braille-blank cells).
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .all(|c| c.bg == BG));
     }
 
     #[test]
