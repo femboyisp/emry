@@ -87,7 +87,12 @@ pub fn run<B: Backend>(
         // dashboard also stays up after a run finishes so final values can be
         // read — it exits only on Quit (or the test frame limit).
         if !state.paused {
-            terminal.draw(|frame| render(frame, state))?;
+            // ratatui 0.30 made `Backend::Error` an associated type (e.g.
+            // `Infallible` for `TestBackend`); map it into `io::Error` rather
+            // than relying on a `From` bound that doesn't hold for all backends.
+            terminal
+                .draw(|frame| render(frame, state))
+                .map_err(|e| io::Error::other(e.to_string()))?;
         }
         frames += 1;
 
