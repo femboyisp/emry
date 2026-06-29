@@ -6,7 +6,7 @@
 //! Select `loss` (`1`) or `loss_ema` (`3`) to see the dashed amber baseline.
 
 use emry_engine::{Engine, RunConfig};
-use emry_tui::{run_terminal, BaselineSeries, UiState};
+use emry_tui::{run_terminal, BaselineSeries, Phase, UiState};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,7 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eta = run.register("eta_secs");
     let events = run.bus().subscribe();
 
-    // Feed a synthetic loss curve from a background thread.
+    // Feed a synthetic loss curve from a background thread, cycling phases and
+    // saving "checkpoints" so the chart shows phase bands + checkpoint markers
+    // alongside the comparison overlay.
     std::thread::spawn(move || {
         for step in 0..2000u64 {
             #[allow(clippy::cast_precision_loss)]
@@ -37,7 +39,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Modest 3x spikes: visible as anomalies without flattening the
             // baseline curve under a linear y-axis.
             let value = if step % 400 == 399 { base * 3.0 } else { base };
+            // A short EVAL phase every 400 steps (the rest is TRAIN).
+            if step % 400 == 0 {
+                run.set_phase(if (step / 400) % 2 == 1 {
+                    Phase::Eval
+                } else {
+                    Phase::Train
+                });
+            }
             run.emit(&[(loss, value), (lr, 1e-3)]);
+            if step % 300 == 0 && step > 0 {
+                run.checkpoint(format!("/ckpt/step_{step}.pt"), step);
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         run.finish().ok();

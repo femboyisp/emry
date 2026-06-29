@@ -301,6 +301,15 @@ impl RunHandle {
         self.epoch = epoch;
     }
 
+    /// Records that a checkpoint was written at `path` for `step` — surfaced as a
+    /// marker on the dashboards. Never blocks (a full ring drops it).
+    pub fn checkpoint(&mut self, path: impl Into<String>, step: u64) {
+        let _ = self.producer.push(Event::Checkpoint {
+            path: path.into(),
+            step,
+        });
+    }
+
     /// Number of events dropped because the ring was full.
     #[must_use]
     pub fn dropped(&self) -> u64 {
@@ -569,6 +578,16 @@ mod tests {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    #[test]
+    fn checkpoint_is_recorded_in_the_event_log() {
+        let dir = TempDir::new();
+        let mut run = Engine::start(config(dir.path())).unwrap();
+        run.checkpoint("/ckpt/step_10.pt", 10);
+        run.finish().unwrap();
+        let events = std::fs::read_to_string(dir.path().join(EVENTS_FILE)).unwrap();
+        assert!(events.contains("CHECKPOINT") && events.contains("step_10.pt"));
     }
 
     #[test]
