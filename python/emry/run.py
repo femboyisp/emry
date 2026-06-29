@@ -19,10 +19,13 @@ interface, so this module needs no Rust to run or test.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Iterator, Mapping, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping, Optional, Protocol
 
 from emry.coerce import coerce_metrics
 from emry.phase import Phase
+
+if TYPE_CHECKING:
+    from emry.gpu import GpuSampler
 
 __all__ = ["Run", "Backend", "NullBackend", "run"]
 
@@ -67,6 +70,7 @@ class Run:
         *,
         metrics: Optional[Iterable[str]] = None,
         config: Optional[Mapping[str, Any]] = None,
+        gpu: object = None,
     ) -> None:
         self.project = project
         self.metrics = list(metrics or [])
@@ -76,6 +80,7 @@ class Run:
         self._epoch = 0
         self._phase = Phase.TRAIN
         self._finished = False
+        self._gpu = _resolve_gpu(gpu)
 
     @property
     def step(self) -> int:
@@ -105,6 +110,10 @@ class Run:
         if self._finished:
             raise RuntimeError("emit() called after the run finished")
         coerced = coerce_metrics(values)
+        if self._gpu is not None:
+            # GPU stats are sampled here (training thread), throttled to ~1/s;
+            # {} between samples. Already floats, so no coercion needed.
+            coerced.update(self._gpu.sample())
         self._backend.emit(self._step, self._epoch, self._phase, coerced)
         self._step += 1
 
@@ -156,6 +165,26 @@ class Run:
         return False  # never suppress exceptions
 
 
+def _resolve_gpu(gpu: object) -> "Optional[GpuSampler]":
+    """Resolves the `gpu` option to a sampler or `None`.
+
+    `"auto"` (default) enables sampling only when `nvidia-smi` is on PATH;
+    `True`/`"on"` forces it; `False`/`"off"`/`None` disables. An already-built
+    `GpuSampler` is passed through (for tests).
+    """
+    from emry.gpu import GpuSampler
+
+    if isinstance(gpu, GpuSampler):
+        return gpu
+    if gpu is None or gpu is False:
+        return None
+    if gpu is True or (isinstance(gpu, str) and gpu.lower() == "on"):
+        return GpuSampler()
+    if isinstance(gpu, str) and gpu.lower() == "auto":
+        return GpuSampler() if GpuSampler.available() else None
+    return None  # unknown value: be quiet
+
+
 def run(
     project: str,
     *,
@@ -164,6 +193,7 @@ def run(
     live: str = "auto",  # noqa: ARG001 — observer spawning is EMRY-035
     mode: object = None,
     log_dir: Optional[str] = None,
+    gpu: object = "auto",
     backend: Optional[Backend] = None,
 ) -> Run:
     """Starts a run and returns its [`Run`] handle.
@@ -172,9 +202,12 @@ def run(
     mode) and, per `live`, may launch a dashboard. Pass `backend` to inject an
     alternative (e.g. a fake in tests) — observer spawning is skipped then, since
     the caller is in full control.
+
+    `gpu` controls GPU metric sampling: `"auto"` (default) samples `nvidia-smi`
+    when it's available, `True`/`False` force it on/off.
     """
     if backend is not None:
-        return Run(project, backend, metrics=metrics, config=config)
+        return Run(project, backend, metrics=metrics, config=config, gpu=gpu)
 
     backend = _default_backend(
         project,
@@ -184,7 +217,7 @@ def run(
         log_dir=log_dir,
     )
     _spawn_live(live, backend)
-    return Run(project, backend, metrics=metrics, config=config)
+    return Run(project, backend, metrics=metrics, config=config, gpu=gpu)
 
 
 def _spawn_live(live: object, backend: Backend) -> None:

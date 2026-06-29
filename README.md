@@ -61,7 +61,9 @@ with emry.run("llama-sft", config={"lr": 2e-5}, metrics=["loss", "lr"]) as run:
 takes any metrics as keyword arguments. Mark phases with
 `run.phase = emry.Phase.EVAL`, and iterate epochs with `run.epochs(n)` to track
 the epoch automatically. Values are duck-typed — tensors and numpy scalars are
-coerced, so you can pass `loss` directly without `.item()`.
+coerced, so you can pass `loss` directly without `.item()`. When an NVIDIA GPU is
+present, Emry samples `nvidia-smi` automatically and charts GPU utilization,
+memory, and temperature alongside your metrics (`gpu=False` to disable).
 
 By default Emry writes a run directory under `./logs/` and, when attached to a
 TTY, brings up the live terminal dashboard. Set `EMRY_MODE` (`embedded` |
