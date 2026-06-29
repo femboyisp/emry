@@ -15,6 +15,7 @@ deterministically; [`spawn_observers`] does the actual detached ``emry`` launch.
 from __future__ import annotations
 
 import subprocess
+import sys
 import warnings
 from pathlib import Path
 from typing import List, Optional
@@ -51,17 +52,16 @@ def observer_command(
 ) -> Optional[List[str]]:
     """Builds the ``emry`` argv for an observer, or ``None`` if it can't run.
 
-    A TUI attaches to the run directory (file/embedded) or the sidecar socket;
-    the web observer is not built yet (EMRY-044).
+    Both observers attach to the run directory (file/embedded) or the sidecar
+    socket — the TUI renders in the terminal, the web dashboard serves
+    ``http://127.0.0.1:8787``.
     """
-    if kind == "tui":
-        if socket_path:
-            return ["emry", "tui", "--socket", socket_path]
-        if run_dir is not None:
-            return ["emry", "tui", "--run-dir", str(run_dir)]
+    if kind not in ("tui", "web"):
         return None
-    if kind == "web":
-        return None  # `emry web` lands in EMRY-044
+    if socket_path:
+        return ["emry", kind, "--socket", socket_path]
+    if run_dir is not None:
+        return ["emry", kind, "--run-dir", str(run_dir)]
     return None
 
 
@@ -82,13 +82,18 @@ def spawn_observers(
                     cmd,
                     start_new_session=True,
                     # Detach stdio so the observer's output never bleeds into the
-                    # training process's terminal/log. (A co-located local TUI
-                    # can't share the training terminal — over SSH the web
-                    # dashboard, EMRY-044, is the better observer.)
+                    # training process's terminal/log.
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
             )
+            if kind == "web":
+                # The web server's own "serving on …" line is detached above, so
+                # surface the URL once (over SSH, forward the port to view it).
+                print(
+                    "emry: live web dashboard on http://127.0.0.1:8787",
+                    file=sys.stderr,
+                )
         except FileNotFoundError:
             warnings.warn(
                 "could not launch the `emry` binary for the live dashboard "
