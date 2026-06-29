@@ -9,7 +9,7 @@
 //! Derived series (EMA, throughput, ETA) are not shown yet — wiring the
 //! processors' `DerivedMetric`s into this state is EMRY-022.
 
-use crate::chart::render_braille;
+use crate::chart::{render_braille_steps, BRAILLE_BLANK};
 use emry_core::{AlertRecord, Event, MetricId, Phase, Severity};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -27,6 +27,7 @@ pub const WARM_GRAY: Color = Color::Rgb(0x6B, 0x65, 0x60);
 
 const DEFAULT_HISTORY: usize = 4096;
 const DEFAULT_ALERTS: usize = 5;
+const DEFAULT_MARKERS: usize = 512;
 
 /// A single tracked metric and its recent history.
 #[derive(Debug, Clone)]
@@ -39,6 +40,18 @@ pub struct MetricView {
     pub latest: f64,
     /// Recent values, oldest first (capped FIFO).
     pub history: VecDeque<f64>,
+    /// Step each `history` value was recorded at (parallel to `history`), so the
+    /// chart x-axis is step-based for phase bands + checkpoint markers.
+    pub steps: VecDeque<u64>,
+}
+
+/// A phase transition: the run entered `phase` at `step` (for chart shading).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhaseSpan {
+    /// Step at which this phase began.
+    pub step: u64,
+    /// Phase entered.
+    pub phase: Phase,
 }
 
 /// The full dashboard state, reduced from the event stream.
@@ -62,9 +75,14 @@ pub struct UiState {
     pub paused: bool,
     /// Whether the run has finished.
     pub finished: bool,
+    /// Phase transitions in step order (background shading; capped FIFO).
+    pub phases: VecDeque<PhaseSpan>,
+    /// Steps at which checkpoints were taken (vertical markers; capped FIFO).
+    pub checkpoints: VecDeque<u64>,
     labels: BTreeMap<u16, String>,
     max_history: usize,
     max_alerts: usize,
+    max_markers: usize,
 }
 
 impl Default for UiState {
@@ -79,9 +97,12 @@ impl Default for UiState {
             selected: 0,
             paused: false,
             finished: false,
+            phases: VecDeque::new(),
+            checkpoints: VecDeque::new(),
             labels: BTreeMap::new(),
             max_history: DEFAULT_HISTORY,
             max_alerts: DEFAULT_ALERTS,
+            max_markers: DEFAULT_MARKERS,
         }
     }
 }
@@ -105,23 +126,34 @@ impl UiState {
                 id, value, step, ..
             } => {
                 self.step = *step;
-                self.record(*id, *value);
+                self.record(*id, *value, *step);
             }
             Event::MetricsBatch { step, values, .. } => {
                 self.step = *step;
                 for (id, value) in values {
-                    self.record(*id, *value);
+                    self.record(*id, *value, *step);
                 }
             }
-            Event::PhaseChange(phase) => self.phase = *phase,
+            Event::PhaseChange(phase) => {
+                self.phase = *phase;
+                self.phases.push_back(PhaseSpan {
+                    step: self.step,
+                    phase: *phase,
+                });
+                cap_front(&mut self.phases, self.max_markers);
+            }
             Event::Alert(alert) => {
                 self.alerts.push(alert.clone());
                 if self.alerts.len() > self.max_alerts {
                     self.alerts.remove(0);
                 }
             }
+            Event::Checkpoint { step, .. } => {
+                self.checkpoints.push_back(*step);
+                cap_front(&mut self.checkpoints, self.max_markers);
+            }
             Event::RunFinished { .. } => self.finished = true,
-            Event::Checkpoint { .. } | Event::ConfigPatch(_) => {}
+            Event::ConfigPatch(_) => {}
         }
     }
 
@@ -137,7 +169,7 @@ impl UiState {
         self.paused = !self.paused;
     }
 
-    fn record(&mut self, id: MetricId, value: f64) {
+    fn record(&mut self, id: MetricId, value: f64, step: u64) {
         let label = self.label_for(id);
         let max_history = self.max_history;
         let view = if let Some(v) = self.metrics.iter_mut().find(|m| m.id == id) {
@@ -148,14 +180,17 @@ impl UiState {
                 label: label.clone(),
                 latest: value,
                 history: VecDeque::new(),
+                steps: VecDeque::new(),
             });
             self.metrics.last_mut().expect("just pushed")
         };
         view.label = label; // refresh in case labels were seeded after first use
         view.latest = value;
         view.history.push_back(value);
+        view.steps.push_back(step);
         if view.history.len() > max_history {
             view.history.pop_front(); // O(1) FIFO drop, not O(n) shift
+            view.steps.pop_front();
         }
     }
 
@@ -254,18 +289,123 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     // Inner drawable area excludes the one-cell border on each side.
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner_h = area.height.saturating_sub(2) as usize;
+    let title = format!("{} (latest {:.4})", metric.label, metric.latest);
+
     let history: Vec<f64> = metric.history.iter().copied().collect();
-    let lines: Vec<Line> = render_braille(&history, inner_w, inner_h)
-        .into_iter()
-        .map(|row| Line::from(Span::styled(row, Style::default().fg(TERRACOTTA))))
-        .collect();
-    frame.render_widget(
-        Paragraph::new(lines).block(block(&format!(
-            "{} (latest {:.4})",
-            metric.label, metric.latest
-        ))),
-        area,
+    let steps: Vec<u64> = metric.steps.iter().copied().collect();
+    let chart = render_braille_steps(&history, &steps, inner_w, inner_h);
+    let lines = compose_chart_lines(&chart, &state.phases, &state.checkpoints);
+
+    frame.render_widget(Paragraph::new(lines).block(block(&title)), area);
+}
+
+/// Builds the styled chart rows: the terracotta curve over phase-tinted
+/// backgrounds, with dim checkpoint markers drawn through blank cells.
+fn compose_chart_lines<'a>(
+    chart: &crate::chart::StepChart,
+    phases: &VecDeque<PhaseSpan>,
+    checkpoints: &VecDeque<u64>,
+) -> Vec<Line<'a>> {
+    if chart.rows.is_empty() {
+        return Vec::new();
+    }
+    let width = chart.col_steps.len();
+    let (s0, s1) = (
+        chart.col_steps.first().copied().unwrap_or(0),
+        chart.col_steps.last().copied().unwrap_or(0),
     );
+
+    // Per-column background tint (by the phase active at that column's step).
+    let col_bg: Vec<Option<Color>> = chart
+        .col_steps
+        .iter()
+        .map(|&st| phase_bg(phase_at(phases, st)))
+        .collect();
+
+    // Columns that carry a checkpoint marker. Map each checkpoint onto the same
+    // step axis the chart was built with (`col_steps`) rather than recomputing,
+    // so markers stay aligned with the curve.
+    let mut is_ckpt = vec![false; width];
+    for &c in checkpoints {
+        if c < s0 || c > s1 {
+            continue;
+        }
+        let col = chart
+            .col_steps
+            .partition_point(|&s| s < c)
+            .min(width.saturating_sub(1));
+        if let Some(slot) = is_ckpt.get_mut(col) {
+            *slot = true;
+        }
+    }
+
+    chart
+        .rows
+        .iter()
+        .map(|row| {
+            let row_cells: Vec<char> = row.chars().collect();
+            let mut spans: Vec<Span<'a>> = Vec::new();
+            // Coalesce consecutive cells that share a (char-kind, style).
+            let mut buf = String::new();
+            let mut cur: Option<Style> = None;
+            for (c, &ch) in row_cells.iter().enumerate().take(width) {
+                let blank = ch == BRAILLE_BLANK;
+                // A checkpoint marker shows through blank cells (dashed vertical);
+                // where the curve occupies the cell, the curve wins.
+                let (glyph, fg) = if is_ckpt[c] && blank {
+                    ('\u{250a}', WARM_GRAY) // ┊
+                } else {
+                    (ch, TERRACOTTA)
+                };
+                let mut style = Style::default().fg(fg);
+                if let Some(bg) = col_bg[c] {
+                    style = style.bg(bg);
+                }
+                if cur == Some(style) {
+                    buf.push(glyph);
+                } else {
+                    if let Some(prev) = cur.take() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), prev));
+                    }
+                    buf.push(glyph);
+                    cur = Some(style);
+                }
+            }
+            if let Some(prev) = cur {
+                spans.push(Span::styled(buf, prev));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The phase active at `step`: the most recent span at or before it (default
+/// [`Phase::Train`] before any transition).
+fn phase_at(phases: &VecDeque<PhaseSpan>, step: u64) -> Phase {
+    phases
+        .iter()
+        .rev()
+        .find(|s| s.step <= step)
+        .map_or(Phase::Train, |s| s.phase)
+}
+
+/// Subtle background tint for a phase band (TRAIN is untinted — the default
+/// panel). Dark, warm tints keep the cream/terracotta foreground readable.
+fn phase_bg(phase: Phase) -> Option<Color> {
+    match phase {
+        Phase::Train => None,
+        Phase::Eval => Some(Color::Rgb(0x2C, 0x25, 0x18)),
+        Phase::Test => Some(Color::Rgb(0x2C, 0x20, 0x18)),
+        Phase::Warmup => Some(Color::Rgb(0x24, 0x22, 0x20)),
+        Phase::Checkpoint => Some(Color::Rgb(0x26, 0x24, 0x22)),
+    }
+}
+
+/// Drops oldest elements from the front of `q` until it fits `max` (O(1) FIFO).
+fn cap_front<T>(q: &mut VecDeque<T>, max: usize) {
+    while q.len() > max {
+        q.pop_front();
+    }
 }
 
 fn render_alerts(frame: &mut Frame, area: Rect, state: &UiState) {
@@ -424,6 +564,82 @@ mod tests {
         terminal.draw(|f| render(f, &s)).unwrap();
         let text = buffer_text(terminal.backend());
         assert!(text.contains("waiting for metrics"));
+    }
+
+    #[test]
+    fn tracks_steps_phases_and_checkpoints() {
+        let mut s = UiState::default();
+        s.apply(&batch(0, &[(0, 1.0)]));
+        s.apply(&batch(5, &[(0, 0.9)]));
+        s.apply(&Event::PhaseChange(Phase::Eval)); // transitions at step 5
+        s.apply(&Event::Checkpoint {
+            path: "/ckpt/6.pt".into(),
+            step: 6,
+        });
+        // Steps are recorded parallel to history.
+        assert_eq!(
+            s.metrics[0].steps.iter().copied().collect::<Vec<_>>(),
+            vec![0, 5]
+        );
+        // The phase span captures where EVAL began.
+        assert_eq!(
+            s.phases.iter().copied().collect::<Vec<_>>(),
+            vec![PhaseSpan {
+                step: 5,
+                phase: Phase::Eval
+            }]
+        );
+        // Checkpoints are recorded (previously dropped).
+        assert_eq!(s.checkpoints.iter().copied().collect::<Vec<_>>(), vec![6]);
+    }
+
+    #[test]
+    fn phase_at_resolves_active_span() {
+        let spans: VecDeque<PhaseSpan> = [
+            PhaseSpan {
+                step: 10,
+                phase: Phase::Eval,
+            },
+            PhaseSpan {
+                step: 20,
+                phase: Phase::Train,
+            },
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(phase_at(&VecDeque::new(), 5), Phase::Train); // default
+        assert_eq!(phase_at(&spans, 5), Phase::Train);
+        assert_eq!(phase_at(&spans, 15), Phase::Eval);
+        assert_eq!(phase_at(&spans, 25), Phase::Train);
+        assert!(phase_bg(Phase::Train).is_none());
+        assert!(phase_bg(Phase::Eval).is_some());
+    }
+
+    #[test]
+    fn chart_draws_phase_band_and_checkpoint_marker() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..40u64 {
+            s.apply(&batch(step, &[(0, 1.0 / (step as f64 + 1.0))]));
+        }
+        s.apply(&Event::PhaseChange(Phase::Eval)); // shades from step 39 onward
+        s.apply(&Event::Checkpoint {
+            path: "/ckpt/20.pt".into(),
+            step: 20,
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // A checkpoint marker glyph is drawn somewhere in the chart.
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains('\u{250a}'), "checkpoint marker rendered");
+        // At least one cell carries the EVAL phase background tint.
+        let eval_bg = phase_bg(Phase::Eval).unwrap();
+        assert!(
+            buffer.content().iter().any(|c| c.bg == eval_bg),
+            "EVAL phase band shaded a cell background"
+        );
     }
 
     fn buffer_text(backend: &TestBackend) -> String {
