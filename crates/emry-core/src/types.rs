@@ -416,18 +416,26 @@ mod tests {
     fn event_roundtrips_through_msgpack_as_maps() {
         use serde::Serialize;
 
-        let event = Event::MetricsBatch {
-            step: 7,
-            epoch: 0,
-            phase: Phase::Warmup,
-            values: vec![(MetricId(3), 1.5)],
-        };
-        let mut bytes = Vec::new();
-        event
-            .serialize(&mut rmp_serde::Serializer::new(&mut bytes).with_struct_map())
-            .unwrap();
-        let back: Event = rmp_serde::from_slice(&bytes).unwrap();
-        assert_eq!(back, event);
+        // Both a hot-path batch and the name table (the sidecar socket's primary
+        // structured payloads) must roundtrip through the map-encoded msgpack.
+        for event in [
+            Event::MetricsBatch {
+                step: 7,
+                epoch: 0,
+                phase: Phase::Warmup,
+                values: vec![(MetricId(3), 1.5)],
+            },
+            Event::MetricsRegistered {
+                names: vec![(MetricId(3), "grad_norm".to_owned())],
+            },
+        ] {
+            let mut bytes = Vec::new();
+            event
+                .serialize(&mut rmp_serde::Serializer::new(&mut bytes).with_struct_map())
+                .unwrap();
+            let back: Event = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(back, event);
+        }
     }
 
     #[test]
