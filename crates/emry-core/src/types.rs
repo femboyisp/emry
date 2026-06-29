@@ -152,6 +152,14 @@ pub enum Event {
     Alert(AlertRecord),
     /// The run started; carries its [`RunMeta`].
     RunStarted(RunMeta),
+    /// Metric `id → name` mappings, so observers consuming the event stream (the
+    /// bus or sidecar socket — which carry [`MetricId`], not names) can label
+    /// metrics without an out-of-band table. Emitted at run start (a registry
+    /// snapshot) and on any later registration; carries only the new pairs.
+    MetricsRegistered {
+        /// Newly-registered `(metric, name)` pairs.
+        names: Vec<(MetricId, String)>,
+    },
     /// The run finished.
     RunFinished {
         /// Wall-clock duration of the run.
@@ -289,6 +297,9 @@ mod tests {
                 config: serde_json::json!({}),
                 start_time_secs: 1.0,
             }),
+            Event::MetricsRegistered {
+                names: vec![(MetricId(0), "loss".into()), (MetricId(1), "lr".into())],
+            },
             Event::RunFinished {
                 duration_secs: 3600.0,
                 reason: FinishReason::Completed,
@@ -363,6 +374,10 @@ mod tests {
                 start_time_secs: 0.0,
             })),
             "RUN_STARTED"
+        );
+        assert_eq!(
+            tag(&Event::MetricsRegistered { names: vec![] }),
+            "METRICS_REGISTERED"
         );
         assert_eq!(
             tag(&Event::RunFinished {
