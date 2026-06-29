@@ -1,10 +1,12 @@
-//! Live TUI demo: a synthetic training run streams to the dashboard.
+//! Live TUI demo: a synthetic training run streams to the dashboard, overlaid
+//! against a synthetic "previous run" baseline (the amber comparison curve).
 //!
 //! Run in a real terminal with: `cargo run -p emry-tui --example tui_demo`
 //! Keys: `q`/`Esc` quit, `1`–`4` select metric, `p` pause.
+//! Select `loss` (`1`) or `loss_ema` (`3`) to see the dashed amber baseline.
 
 use emry_engine::{Engine, RunConfig};
-use emry_tui::{run_terminal, UiState};
+use emry_tui::{run_terminal, BaselineSeries, UiState};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         run.finish().ok();
     });
 
-    let state = UiState::with_labels(&[
+    let mut state = UiState::with_labels(&[
         (loss, "loss"),
         (lr, "lr"),
         (loss_ema, "loss_ema"),
@@ -49,6 +51,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (sps, "steps_per_sec"),
         (eta, "eta_secs"),
     ]);
+    // A synthetic "previous run" whose loss decays more slowly, overlaid as the
+    // amber comparison baseline behind the live (terracotta) curve.
+    state.set_baseline(synthetic_baseline());
     run_terminal(&events, state)?;
     Ok(())
+}
+
+/// A prior-run baseline for `loss` / `loss_ema` that sits above the live curve.
+fn synthetic_baseline() -> Vec<BaselineSeries> {
+    let (mut steps, mut values) = (Vec::new(), Vec::new());
+    for step in (0..2000u64).step_by(5) {
+        #[allow(clippy::cast_precision_loss)]
+        let loss = 2.3 / (1.0 + step as f64 * 0.0032);
+        steps.push(step);
+        values.push(loss);
+    }
+    let series = |label: &str| BaselineSeries {
+        label: label.to_string(),
+        steps: steps.clone(),
+        values: values.clone(),
+    };
+    vec![series("loss"), series("loss_ema")]
 }

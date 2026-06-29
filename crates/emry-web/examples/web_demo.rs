@@ -55,11 +55,9 @@ async fn main() {
         }
     });
 
-    // Write a synthetic "previous run" metrics.jsonl, then load it as the
-    // comparison baseline so the dashboard overlays it as a dashed amber line.
-    let baseline_path = std::env::temp_dir().join("emry-web-demo-baseline.jsonl");
-    write_baseline(&baseline_path);
-    let baseline = emry_web::load_baseline(&baseline_path).expect("load baseline");
+    // A synthetic "previous run" whose loss decays a touch slower than the live
+    // run, overlaid as a dashed amber baseline.
+    let baseline = synthetic_baseline();
 
     println!("serving on http://127.0.0.1:8788");
     let labels = [
@@ -72,18 +70,22 @@ async fn main() {
         .unwrap();
 }
 
-/// Writes a synthetic prior run whose loss decays a touch slower than the live
-/// run, so the dashed overlay sits visibly above the live curve.
-fn write_baseline(path: &std::path::Path) {
-    use std::io::Write;
-    let mut f = std::fs::File::create(path).expect("create baseline file");
+/// A synthetic prior run whose loss decays a touch slower than the live run, so
+/// the dashed overlay sits visibly above the live curve.
+fn synthetic_baseline() -> emry_web::Baseline {
+    let (mut steps, mut values) = (Vec::new(), Vec::new());
     for step in (0..100_000u64).step_by(50) {
         #[allow(clippy::cast_precision_loss)]
         let loss = 2.2 / (1.0 + step as f64 * 0.008);
-        writeln!(
-            f,
-            r#"{{"step":{step},"epoch":0,"phase":"TRAIN","values":{{"loss":{loss},"loss_ema":{loss}}}}}"#
-        )
-        .expect("write baseline row");
+        steps.push(step);
+        values.push(loss);
+    }
+    let series = |label: &str| emry_web::BaselineSeries {
+        label: label.to_string(),
+        steps: steps.clone(),
+        values: values.clone(),
+    };
+    emry_web::Baseline {
+        metrics: vec![series("loss"), series("loss_ema")],
     }
 }
