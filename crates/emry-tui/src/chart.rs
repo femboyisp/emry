@@ -150,22 +150,58 @@ pub struct StepChart {
     pub col_steps: Vec<u64>,
 }
 
-/// Renders `values` (with their parallel `steps`, ascending) as a braille band
-/// chart whose x-axis is **step-based** — each point lands in the column for its
-/// step, so the curve aligns with phase bands and checkpoint markers drawn at
-/// the same steps. Empty columns carry the previous column forward so the line
-/// stays continuous. `steps` must be the same length as `values`.
+/// The finite min/max of `values`, or `None` if there are no finite values.
 #[must_use]
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)] // normalised values are small/bounded; step indices fit the grid
+pub fn value_range(values: &[f64]) -> Option<(f64, f64)> {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for &v in values {
+        if v.is_finite() {
+            min = min.min(v);
+            max = max.max(v);
+        }
+    }
+    min.is_finite().then_some((min, max))
+}
+
+/// Renders `values` (with their parallel `steps`, ascending) as a step-based
+/// braille band chart, auto-scaling the y-axis to the data. See
+/// [`render_braille_steps_scaled`] for the shared-scale variant used to overlay
+/// two series.
+#[must_use]
 pub fn render_braille_steps(
     values: &[f64],
     steps: &[u64],
     width: usize,
     height: usize,
+) -> StepChart {
+    let s0 = steps.first().copied().unwrap_or(0);
+    let s1 = steps.last().copied().unwrap_or(0);
+    let (g_min, g_max) = value_range(values).unwrap_or((f64::NAN, f64::NAN));
+    render_braille_steps_scaled(values, steps, width, height, s0, s1, g_min, g_max)
+}
+
+/// Like [`render_braille_steps`] but with an explicit step window `[s0, s1]` and
+/// y-scale `[g_min, g_max]`, so two series can be drawn on the **same** axes and
+/// overlaid (e.g. a live curve and a comparison baseline). Points are placed by
+/// step within the window; empty columns carry the previous forward. A
+/// non-finite scale yields blank rows.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments
+)] // values are normalised/bounded; the args are a deliberate scale+window
+pub fn render_braille_steps_scaled(
+    values: &[f64],
+    steps: &[u64],
+    width: usize,
+    height: usize,
+    s0: u64,
+    s1: u64,
+    g_min: f64,
+    g_max: f64,
 ) -> StepChart {
     if width == 0 || height == 0 {
         return StepChart {
@@ -173,17 +209,24 @@ pub fn render_braille_steps(
             col_steps: Vec::new(),
         };
     }
-    let blank = StepChart {
-        rows: vec![BRAILLE_BLANK.to_string().repeat(width); height],
-        col_steps: vec![0; width],
-    };
-    if values.is_empty() || steps.len() != values.len() {
-        return blank;
-    }
-
-    let s0 = steps[0];
-    let s1 = steps[steps.len() - 1];
     let step_span = s1.saturating_sub(s0).max(1) as f64;
+    let col_steps: Vec<u64> = (0..width)
+        .map(|c| {
+            if width == 1 {
+                s0
+            } else {
+                s0 + ((c as f64 / (width - 1) as f64) * step_span).round() as u64
+            }
+        })
+        .collect();
+    let blank = || StepChart {
+        rows: vec![BRAILLE_BLANK.to_string().repeat(width); height],
+        col_steps: col_steps.clone(),
+    };
+    if values.is_empty() || steps.len() != values.len() || !g_min.is_finite() || !g_max.is_finite()
+    {
+        return blank();
+    }
 
     let dot_w = width * 2;
     let dot_h = height * 4;
@@ -191,7 +234,7 @@ pub fn render_braille_steps(
     // Accumulate (min, max) per dot column, keyed by each point's step.
     let mut cols: Vec<Option<(f64, f64)>> = vec![None; dot_w];
     for (&v, &st) in values.iter().zip(steps) {
-        if !v.is_finite() {
+        if !v.is_finite() || st < s0 || st > s1 {
             continue;
         }
         let frac = (st.saturating_sub(s0) as f64) / step_span;
@@ -215,17 +258,6 @@ pub fn render_braille_steps(
         }
     }
 
-    let mut g_min = f64::INFINITY;
-    let mut g_max = f64::NEG_INFINITY;
-    for &v in values {
-        if v.is_finite() {
-            g_min = g_min.min(v);
-            g_max = g_max.max(v);
-        }
-    }
-    if !g_min.is_finite() {
-        return blank;
-    }
     let span = if (g_max - g_min).abs() < f64::EPSILON {
         1.0
     } else {
@@ -251,17 +283,6 @@ pub fn render_braille_steps(
             row.into_iter()
                 .map(|bits| char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' '))
                 .collect()
-        })
-        .collect();
-
-    // Step at the centre of each character column.
-    let col_steps = (0..width)
-        .map(|c| {
-            if width == 1 {
-                s0
-            } else {
-                s0 + ((c as f64 / (width - 1) as f64) * step_span).round() as u64
-            }
         })
         .collect();
 

@@ -17,6 +17,6 @@ pub use meta::{
     create_run_dir, run_dir_name, write_json, RunMetaFile, Summary, CONFIG_FILE, RUN_META_FILE,
     SUMMARY_FILE,
 };
-pub use runs::{final_metrics, list_runs, RunInfo};
+pub use runs::{final_metrics, list_runs, load_baseline, BaselineSeries, RunInfo};
 pub use sink::{JsonlSink, FLUSH_EVERY, FLUSH_INTERVAL};
 pub use writer::{JsonlWriter, EVENTS_FILE, METRICS_FILE};

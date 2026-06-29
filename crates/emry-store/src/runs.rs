@@ -105,6 +105,63 @@ pub fn final_metrics(path: &Path) -> Result<BTreeMap<String, f64>, EmryError> {
     Ok(latest)
 }
 
+/// One metric's full series from a run, for the comparison overlay (`emry watch
+/// --compare`). Steps and values are parallel and in file order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaselineSeries {
+    /// Metric name.
+    pub label: String,
+    /// Step of each value.
+    pub steps: Vec<u64>,
+    /// Values (parallel to `steps`).
+    pub values: Vec<f64>,
+}
+
+/// Reads a run's `metrics.jsonl` (`path` is the run directory or the file) into
+/// per-metric series, in first-seen metric order — the comparison baseline a run
+/// is overlaid against.
+///
+/// # Errors
+///
+/// Returns [`EmryError::Io`] if the file cannot be read or [`EmryError::Json`]
+/// if a line is not a valid [`MetricRecord`].
+pub fn load_baseline(path: &Path) -> Result<Vec<BaselineSeries>, EmryError> {
+    let file = if path.is_dir() {
+        path.join(METRICS_FILE)
+    } else {
+        path.to_path_buf()
+    };
+    let mut order: Vec<String> = Vec::new();
+    let mut series: BTreeMap<String, (Vec<u64>, Vec<f64>)> = BTreeMap::new();
+    for line in BufReader::new(std::fs::File::open(file)?).lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let record: MetricRecord = serde_json::from_str(trimmed)?;
+        for (name, value) in record.values {
+            let entry = series.entry(name.clone()).or_insert_with(|| {
+                order.push(name.clone());
+                (Vec::new(), Vec::new())
+            });
+            entry.0.push(record.step);
+            entry.1.push(value);
+        }
+    }
+    Ok(order
+        .into_iter()
+        .map(|label| {
+            let (steps, values) = series.remove(&label).unwrap_or_default();
+            BaselineSeries {
+                label,
+                steps,
+                values,
+            }
+        })
+        .collect())
+}
+
 /// Reads `summary.json` from a run directory, returning `None` if it is absent
 /// or unreadable (an unfinished or partially written run).
 fn read_summary(dir: &Path) -> Option<Summary> {
@@ -201,6 +258,32 @@ mod tests {
         let final_m = final_metrics(dir.path()).unwrap();
         assert_eq!(final_m["loss"], 0.4); // last row wins
         assert_eq!(final_m["lr"], 0.1); // carried from the earlier row
+    }
+
+    #[test]
+    fn load_baseline_returns_series_in_first_seen_order() {
+        let dir = crate::test_util::TempRunDir::new();
+        std::fs::write(
+            dir.path().join(METRICS_FILE),
+            "{\"step\":0,\"epoch\":0,\"phase\":\"TRAIN\",\"values\":{\"loss\":1.0,\"lr\":0.1}}\n\
+             {\"step\":2,\"epoch\":0,\"phase\":\"TRAIN\",\"values\":{\"loss\":0.4}}\n",
+        )
+        .unwrap();
+        let series = load_baseline(dir.path()).unwrap();
+        let loss = series.iter().find(|s| s.label == "loss").unwrap();
+        assert_eq!(loss.steps, vec![0, 2]);
+        assert_eq!(loss.values, vec![1.0, 0.4]);
+        // lr only appears on the first row.
+        let lr = series.iter().find(|s| s.label == "lr").unwrap();
+        assert_eq!(lr.steps, vec![0]);
+    }
+
+    #[test]
+    fn load_baseline_errors_on_missing_file() {
+        assert!(matches!(
+            load_baseline(Path::new("/no/such/emry/metrics.jsonl")),
+            Err(EmryError::Io(_))
+        ));
     }
 
     #[test]

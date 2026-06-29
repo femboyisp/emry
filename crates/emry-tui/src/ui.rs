@@ -9,7 +9,7 @@
 //! Derived series (EMA, throughput, ETA) are not shown yet — wiring the
 //! processors' `DerivedMetric`s into this state is EMRY-022.
 
-use crate::chart::{render_braille_steps, BRAILLE_BLANK};
+use crate::chart::{render_braille_steps_scaled, value_range, StepChart, BRAILLE_BLANK};
 use emry_core::{AlertRecord, Event, MetricId, Phase, Severity};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -24,6 +24,8 @@ pub const CREAM: Color = Color::Rgb(0xF5, 0xF0, 0xE8);
 pub const TERRACOTTA: Color = Color::Rgb(0xC4, 0x71, 0x4A);
 /// Warm gray for secondary text.
 pub const WARM_GRAY: Color = Color::Rgb(0x6B, 0x65, 0x60);
+/// Amber accent — used for the comparison-baseline overlay.
+pub const AMBER: Color = Color::Rgb(0xD9, 0x9A, 0x4A);
 
 const DEFAULT_HISTORY: usize = 4096;
 const DEFAULT_ALERTS: usize = 5;
@@ -54,6 +56,17 @@ pub struct PhaseSpan {
     pub phase: Phase,
 }
 
+/// A prior run's metric series, overlaid on the live chart for comparison.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BaselineSeries {
+    /// Metric name (matched against the selected live metric's label).
+    pub label: String,
+    /// Step of each value (parallel to `values`).
+    pub steps: Vec<u64>,
+    /// Values (parallel to `steps`).
+    pub values: Vec<f64>,
+}
+
 /// The full dashboard state, reduced from the event stream.
 #[derive(Debug, Clone)]
 pub struct UiState {
@@ -79,6 +92,8 @@ pub struct UiState {
     pub phases: VecDeque<PhaseSpan>,
     /// Steps at which checkpoints were taken (vertical markers; capped FIFO).
     pub checkpoints: VecDeque<u64>,
+    /// Prior-run series overlaid on the chart for comparison (empty if none).
+    pub baseline: Vec<BaselineSeries>,
     labels: BTreeMap<u16, String>,
     max_history: usize,
     max_alerts: usize,
@@ -99,6 +114,7 @@ impl Default for UiState {
             finished: false,
             phases: VecDeque::new(),
             checkpoints: VecDeque::new(),
+            baseline: Vec::new(),
             labels: BTreeMap::new(),
             max_history: DEFAULT_HISTORY,
             max_alerts: DEFAULT_ALERTS,
@@ -116,6 +132,11 @@ impl UiState {
             state.labels.insert(id.index(), (*name).to_owned());
         }
         state
+    }
+
+    /// Sets the comparison baseline overlaid on the chart (from a prior run).
+    pub fn set_baseline(&mut self, baseline: Vec<BaselineSeries>) {
+        self.baseline = baseline;
     }
 
     /// Reduces one event into the state.
@@ -289,48 +310,93 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     // Inner drawable area excludes the one-cell border on each side.
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner_h = area.height.saturating_sub(2) as usize;
-    let title = format!("{} (latest {:.4})", metric.label, metric.latest);
 
     let history: Vec<f64> = metric.history.iter().copied().collect();
     let steps: Vec<u64> = metric.steps.iter().copied().collect();
-    let chart = render_braille_steps(&history, &steps, inner_w, inner_h);
-    let lines = compose_chart_lines(&chart, &state.phases, &state.checkpoints);
+    let s0 = steps.first().copied().unwrap_or(0);
+    let s1 = steps.last().copied().unwrap_or(0);
 
+    // The baseline series matching this metric, clipped to the live step window.
+    let base = state
+        .baseline
+        .iter()
+        .find(|b| b.label == metric.label)
+        .map(|b| {
+            let (mut bs, mut bv) = (Vec::new(), Vec::new());
+            for (&st, &v) in b.steps.iter().zip(&b.values) {
+                if st >= s0 && st <= s1 {
+                    bs.push(st);
+                    bv.push(v);
+                }
+            }
+            (bs, bv)
+        });
+
+    // Share one y-scale across the live curve and the baseline so they compare.
+    let (mut g_min, mut g_max) = value_range(&history).unwrap_or((0.0, 1.0));
+    if let Some((_, bv)) = &base {
+        if let Some((bmin, bmax)) = value_range(bv) {
+            g_min = g_min.min(bmin);
+            g_max = g_max.max(bmax);
+        }
+    }
+
+    let live =
+        render_braille_steps_scaled(&history, &steps, inner_w, inner_h, s0, s1, g_min, g_max);
+    let base_chart = base.as_ref().map(|(bs, bv)| {
+        render_braille_steps_scaled(bv, bs, inner_w, inner_h, s0, s1, g_min, g_max)
+    });
+
+    let title = if base_chart.is_some() {
+        format!(
+            "{} (latest {:.4})  ·  ╌ baseline",
+            metric.label, metric.latest
+        )
+    } else {
+        format!("{} (latest {:.4})", metric.label, metric.latest)
+    };
+    let lines = compose_chart_lines(
+        &live,
+        base_chart.as_ref(),
+        &state.phases,
+        &state.checkpoints,
+    );
     frame.render_widget(Paragraph::new(lines).block(block(&title)), area);
 }
 
-/// Builds the styled chart rows: the terracotta curve over phase-tinted
-/// backgrounds, with dim checkpoint markers drawn through blank cells.
+/// Builds the styled chart rows: the terracotta live curve over phase-tinted
+/// backgrounds, an amber baseline curve behind it (where the live curve doesn't
+/// occupy the cell), and dim checkpoint markers through remaining blank cells.
 fn compose_chart_lines<'a>(
-    chart: &crate::chart::StepChart,
+    live: &StepChart,
+    base: Option<&StepChart>,
     phases: &VecDeque<PhaseSpan>,
     checkpoints: &VecDeque<u64>,
 ) -> Vec<Line<'a>> {
-    if chart.rows.is_empty() {
+    if live.rows.is_empty() {
         return Vec::new();
     }
-    let width = chart.col_steps.len();
+    let width = live.col_steps.len();
     let (s0, s1) = (
-        chart.col_steps.first().copied().unwrap_or(0),
-        chart.col_steps.last().copied().unwrap_or(0),
+        live.col_steps.first().copied().unwrap_or(0),
+        live.col_steps.last().copied().unwrap_or(0),
     );
 
     // Per-column background tint (by the phase active at that column's step).
-    let col_bg: Vec<Option<Color>> = chart
+    let col_bg: Vec<Option<Color>> = live
         .col_steps
         .iter()
         .map(|&st| phase_bg(phase_at(phases, st)))
         .collect();
 
-    // Columns that carry a checkpoint marker. Map each checkpoint onto the same
-    // step axis the chart was built with (`col_steps`) rather than recomputing,
-    // so markers stay aligned with the curve.
+    // Columns carrying a checkpoint marker, mapped onto the chart's own step
+    // axis (`col_steps`) so they stay aligned with the curve.
     let mut is_ckpt = vec![false; width];
     for &c in checkpoints {
         if c < s0 || c > s1 {
             continue;
         }
-        let col = chart
+        let col = live
             .col_steps
             .partition_point(|&s| s < c)
             .min(width.saturating_sub(1));
@@ -339,23 +405,30 @@ fn compose_chart_lines<'a>(
         }
     }
 
-    chart
-        .rows
+    live.rows
         .iter()
-        .map(|row| {
-            let row_cells: Vec<char> = row.chars().collect();
+        .enumerate()
+        .map(|(r, row)| {
+            let live_cells: Vec<char> = row.chars().collect();
+            let base_cells: Vec<char> = base
+                .and_then(|b| b.rows.get(r))
+                .map(|s| s.chars().collect())
+                .unwrap_or_default();
             let mut spans: Vec<Span<'a>> = Vec::new();
-            // Coalesce consecutive cells that share a (char-kind, style).
             let mut buf = String::new();
             let mut cur: Option<Style> = None;
-            for (c, &ch) in row_cells.iter().enumerate().take(width) {
-                let blank = ch == BRAILLE_BLANK;
-                // A checkpoint marker shows through blank cells (dashed vertical);
-                // where the curve occupies the cell, the curve wins.
-                let (glyph, fg) = if is_ckpt[c] && blank {
+            for (c, &ch) in live_cells.iter().enumerate().take(width) {
+                let base_ch = base_cells.get(c).copied().unwrap_or(BRAILLE_BLANK);
+                // Live curve wins a cell; else the baseline shows; else a
+                // checkpoint marker through blank space; else empty.
+                let (glyph, fg) = if ch != BRAILLE_BLANK {
+                    (ch, TERRACOTTA)
+                } else if base_ch != BRAILLE_BLANK {
+                    (base_ch, AMBER)
+                } else if is_ckpt[c] {
                     ('\u{250a}', WARM_GRAY) // ┊
                 } else {
-                    (ch, TERRACOTTA)
+                    (BRAILLE_BLANK, TERRACOTTA)
                 };
                 let mut style = Style::default().fg(fg);
                 if let Some(bg) = col_bg[c] {
@@ -640,6 +713,51 @@ mod tests {
             buffer.content().iter().any(|c| c.bg == eval_bg),
             "EVAL phase band shaded a cell background"
         );
+    }
+
+    #[test]
+    fn chart_overlays_baseline_in_amber() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..40u64 {
+            s.apply(&batch(step, &[(0, 1.0 / (step as f64 + 1.0))]));
+        }
+        // A baseline that sits well above the live curve so it occupies its own
+        // cells (not hidden behind the live line).
+        s.set_baseline(vec![BaselineSeries {
+            label: "loss".into(),
+            steps: (0..40).collect(),
+            values: (0..40).map(|i| 2.0 - f64::from(i) * 0.01).collect(),
+        }]);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // The chart title advertises the overlay, and some cell is amber.
+        assert!(buffer_text(terminal.backend()).contains("baseline"));
+        assert!(
+            buffer.content().iter().any(|c| c.fg == AMBER),
+            "baseline rendered in amber"
+        );
+    }
+
+    #[test]
+    fn baseline_only_overlays_when_label_matches() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..20u64 {
+            s.apply(&batch(step, &[(0, 1.0 / (step as f64 + 1.0))]));
+        }
+        // Baseline for a different metric — must not appear on the loss chart.
+        s.set_baseline(vec![BaselineSeries {
+            label: "accuracy".into(),
+            steps: (0..20).collect(),
+            values: (0..20).map(|_| 5.0).collect(),
+        }]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(!buffer_text(terminal.backend()).contains("baseline"));
+        assert!(buffer.content().iter().all(|c| c.fg != AMBER));
     }
 
     fn buffer_text(backend: &TestBackend) -> String {

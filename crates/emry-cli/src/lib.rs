@@ -47,11 +47,17 @@ pub enum Commands {
         /// Sidecar socket to read events from.
         #[arg(long)]
         socket: Option<PathBuf>,
+        /// Prior run directory (or `metrics.jsonl`) to overlay as a baseline.
+        #[arg(long)]
+        compare: Option<PathBuf>,
     },
     /// Tail a run directory's `metrics.jsonl` and render it live.
     Watch {
         /// Run directory (or a `metrics.jsonl` file directly).
         path: PathBuf,
+        /// Prior run directory (or `metrics.jsonl`) to overlay as a baseline.
+        #[arg(long)]
+        compare: Option<PathBuf>,
     },
     /// Serve the live web dashboard for a run directory or sidecar socket.
     Web {
@@ -142,8 +148,12 @@ pub fn run() -> ExitCode {
 fn dispatch(command: Commands) -> ExitCode {
     let result = match command {
         Commands::Demo { steps } => cmd_demo(steps),
-        Commands::Watch { path } => cmd_watch(&path),
-        Commands::Tui { run_dir, socket } => cmd_tui(run_dir.as_deref(), socket.as_deref()),
+        Commands::Watch { path, compare } => cmd_watch(&path, compare.as_deref()),
+        Commands::Tui {
+            run_dir,
+            socket,
+            compare,
+        } => cmd_tui(run_dir.as_deref(), socket.as_deref(), compare.as_deref()),
         Commands::Web {
             run_dir,
             socket,
@@ -173,18 +183,46 @@ fn dispatch(command: Commands) -> ExitCode {
     }
 }
 
-/// Builds the dashboard state (seeded with `labels`) and renders `events` to the
-/// terminal until the user quits.
+/// Builds the dashboard state (seeded with `labels` and an optional comparison
+/// `baseline`) and renders `events` to the terminal until the user quits.
 fn run_dashboard(
     events: &Receiver<Event>,
     labels: &[(MetricId, String)],
+    baseline: Vec<emry_tui::BaselineSeries>,
 ) -> Result<(), Box<dyn Error>> {
     let label_refs: Vec<(MetricId, &str)> = labels
         .iter()
         .map(|(id, name)| (*id, name.as_str()))
         .collect();
-    run_terminal(events, UiState::with_labels(&label_refs))?;
+    let mut state = UiState::with_labels(&label_refs);
+    state.set_baseline(baseline);
+    run_terminal(events, state)?;
     Ok(())
+}
+
+/// Loads a `--compare` baseline run into the TUI's series, warning (and
+/// continuing without an overlay) if it cannot be read.
+fn load_compare(compare: Option<&Path>) -> Vec<emry_tui::BaselineSeries> {
+    let Some(path) = compare else {
+        return Vec::new();
+    };
+    match emry_store::load_baseline(path) {
+        Ok(series) => series
+            .into_iter()
+            .map(|s| emry_tui::BaselineSeries {
+                label: s.label,
+                steps: s.steps,
+                values: s.values,
+            })
+            .collect(),
+        Err(err) => {
+            eprintln!(
+                "emry: could not load --compare baseline {}: {err}",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// `emry demo` — a synthetic run streamed to the live dashboard.
@@ -219,7 +257,7 @@ fn cmd_demo(steps: u64) -> Result<(), Box<dyn Error>> {
         run.finish().ok();
     });
 
-    run_dashboard(&events, &labels)
+    run_dashboard(&events, &labels, Vec::new())
 }
 
 /// `emry watch PATH` — tail a run directory's `metrics.jsonl` into the dashboard.
@@ -228,9 +266,10 @@ fn cmd_demo(steps: u64) -> Result<(), Box<dyn Error>> {
 /// only after the dashboard starts render with the `m{id}` fallback name until a
 /// name-table protocol exists (a future `MetricRegistered` event); in practice
 /// metrics are registered at run start, so they are present in the first poll.
-fn cmd_watch(path: &Path) -> Result<(), Box<dyn Error>> {
+fn cmd_watch(path: &Path, compare: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let baseline = load_compare(compare);
     let (rx, labels, stop, poller) = spawn_run_dir_tailer(path)?;
-    let result = run_dashboard(&rx, &labels);
+    let result = run_dashboard(&rx, &labels, baseline);
     stop.store(true, Ordering::Release);
     let _ = poller.join();
     result
@@ -283,19 +322,24 @@ fn spawn_run_dir_tailer(path: &Path) -> Result<RunDirTailer, Box<dyn Error>> {
 }
 
 /// `emry tui` — attach to a run directory (`--run-dir`) or a socket (`--socket`).
-fn cmd_tui(run_dir: Option<&Path>, socket: Option<&Path>) -> Result<(), Box<dyn Error>> {
+fn cmd_tui(
+    run_dir: Option<&Path>,
+    socket: Option<&Path>,
+    compare: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     match (run_dir, socket) {
-        (Some(dir), _) => cmd_watch(dir),
-        (None, Some(sock)) => cmd_socket_tui(sock),
+        (Some(dir), _) => cmd_watch(dir, compare),
+        (None, Some(sock)) => cmd_socket_tui(sock, compare),
         (None, None) => Err("specify --run-dir or --socket".into()),
     }
 }
 
 /// Reads framed events from a sidecar socket into the dashboard.
-fn cmd_socket_tui(sock: &Path) -> Result<(), Box<dyn Error>> {
+fn cmd_socket_tui(sock: &Path, compare: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let baseline = load_compare(compare);
     let rx = spawn_socket_reader(sock)?;
     // Socket frames carry MetricIds, not names; labels fall back to `m{id}`.
-    run_dashboard(&rx, &[])
+    run_dashboard(&rx, &[], baseline)
 }
 
 /// Connects to a sidecar socket and drains framed events into a bounded channel
@@ -602,7 +646,22 @@ mod tests {
     fn watch_requires_a_path() {
         assert!(parse(&["emry", "watch"]).is_err());
         match parse(&["emry", "watch", "./logs/run"]).unwrap() {
-            Commands::Watch { path } => assert_eq!(path, PathBuf::from("./logs/run")),
+            Commands::Watch { path, compare } => {
+                assert_eq!(path, PathBuf::from("./logs/run"));
+                assert!(compare.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watch_and_tui_accept_compare() {
+        match parse(&["emry", "watch", "run", "--compare", "old"]).unwrap() {
+            Commands::Watch { compare, .. } => assert_eq!(compare, Some(PathBuf::from("old"))),
+            other => panic!("unexpected {other:?}"),
+        }
+        match parse(&["emry", "tui", "--run-dir", "run", "--compare", "old"]).unwrap() {
+            Commands::Tui { compare, .. } => assert_eq!(compare, Some(PathBuf::from("old"))),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -619,7 +678,9 @@ mod tests {
         ])
         .unwrap()
         {
-            Commands::Tui { run_dir, socket } => {
+            Commands::Tui {
+                run_dir, socket, ..
+            } => {
                 assert_eq!(run_dir, Some(PathBuf::from("./logs/run")));
                 assert_eq!(socket, Some(PathBuf::from("/tmp/e.sock")));
             }
@@ -630,7 +691,9 @@ mod tests {
     #[test]
     fn tui_flags_are_optional() {
         match parse(&["emry", "tui"]).unwrap() {
-            Commands::Tui { run_dir, socket } => {
+            Commands::Tui {
+                run_dir, socket, ..
+            } => {
                 assert!(run_dir.is_none() && socket.is_none());
             }
             other => panic!("unexpected {other:?}"),
@@ -846,7 +909,7 @@ mod tests {
     #[test]
     fn tui_with_no_target_errors() {
         // Pure validation path (no terminal): both targets absent is an error.
-        assert!(cmd_tui(None, None).is_err());
+        assert!(cmd_tui(None, None, None).is_err());
     }
 
     #[test]
