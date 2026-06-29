@@ -75,10 +75,10 @@ pub struct UiState {
     pub paused: bool,
     /// Whether the run has finished.
     pub finished: bool,
-    /// Phase transitions in step order (background shading).
-    pub phases: Vec<PhaseSpan>,
-    /// Steps at which checkpoints were taken (vertical markers).
-    pub checkpoints: Vec<u64>,
+    /// Phase transitions in step order (background shading; capped FIFO).
+    pub phases: VecDeque<PhaseSpan>,
+    /// Steps at which checkpoints were taken (vertical markers; capped FIFO).
+    pub checkpoints: VecDeque<u64>,
     labels: BTreeMap<u16, String>,
     max_history: usize,
     max_alerts: usize,
@@ -97,8 +97,8 @@ impl Default for UiState {
             selected: 0,
             paused: false,
             finished: false,
-            phases: Vec::new(),
-            checkpoints: Vec::new(),
+            phases: VecDeque::new(),
+            checkpoints: VecDeque::new(),
             labels: BTreeMap::new(),
             max_history: DEFAULT_HISTORY,
             max_alerts: DEFAULT_ALERTS,
@@ -136,7 +136,7 @@ impl UiState {
             }
             Event::PhaseChange(phase) => {
                 self.phase = *phase;
-                self.phases.push(PhaseSpan {
+                self.phases.push_back(PhaseSpan {
                     step: self.step,
                     phase: *phase,
                 });
@@ -144,10 +144,12 @@ impl UiState {
             }
             Event::Alert(alert) => {
                 self.alerts.push(alert.clone());
-                cap_front(&mut self.alerts, self.max_alerts);
+                if self.alerts.len() > self.max_alerts {
+                    self.alerts.remove(0);
+                }
             }
             Event::Checkpoint { step, .. } => {
-                self.checkpoints.push(*step);
+                self.checkpoints.push_back(*step);
                 cap_front(&mut self.checkpoints, self.max_markers);
             }
             Event::RunFinished { .. } => self.finished = true,
@@ -299,15 +301,10 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
 
 /// Builds the styled chart rows: the terracotta curve over phase-tinted
 /// backgrounds, with dim checkpoint markers drawn through blank cells.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)] // step→column mapping is bounded by the chart width
 fn compose_chart_lines<'a>(
     chart: &crate::chart::StepChart,
-    phases: &[PhaseSpan],
-    checkpoints: &[u64],
+    phases: &VecDeque<PhaseSpan>,
+    checkpoints: &VecDeque<u64>,
 ) -> Vec<Line<'a>> {
     if chart.rows.is_empty() {
         return Vec::new();
@@ -325,18 +322,20 @@ fn compose_chart_lines<'a>(
         .map(|&st| phase_bg(phase_at(phases, st)))
         .collect();
 
-    // Columns that carry a checkpoint marker.
+    // Columns that carry a checkpoint marker. Map each checkpoint onto the same
+    // step axis the chart was built with (`col_steps`) rather than recomputing,
+    // so markers stay aligned with the curve.
     let mut is_ckpt = vec![false; width];
-    if width > 0 && s1 > s0 {
-        let span = (s1 - s0) as f64;
-        for &c in checkpoints {
-            if c < s0 || c > s1 {
-                continue;
-            }
-            let col = (((c - s0) as f64 / span) * (width - 1) as f64).round() as usize;
-            if let Some(slot) = is_ckpt.get_mut(col) {
-                *slot = true;
-            }
+    for &c in checkpoints {
+        if c < s0 || c > s1 {
+            continue;
+        }
+        let col = chart
+            .col_steps
+            .partition_point(|&s| s < c)
+            .min(width.saturating_sub(1));
+        if let Some(slot) = is_ckpt.get_mut(col) {
+            *slot = true;
         }
     }
 
@@ -382,7 +381,7 @@ fn compose_chart_lines<'a>(
 
 /// The phase active at `step`: the most recent span at or before it (default
 /// [`Phase::Train`] before any transition).
-fn phase_at(phases: &[PhaseSpan], step: u64) -> Phase {
+fn phase_at(phases: &VecDeque<PhaseSpan>, step: u64) -> Phase {
     phases
         .iter()
         .rev()
@@ -402,10 +401,10 @@ fn phase_bg(phase: Phase) -> Option<Color> {
     }
 }
 
-/// Drops oldest elements from the front of `v` until it fits `max` (FIFO cap).
-fn cap_front<T>(v: &mut Vec<T>, max: usize) {
-    while v.len() > max {
-        v.remove(0);
+/// Drops oldest elements from the front of `q` until it fits `max` (O(1) FIFO).
+fn cap_front<T>(q: &mut VecDeque<T>, max: usize) {
+    while q.len() > max {
+        q.pop_front();
     }
 }
 
@@ -584,19 +583,19 @@ mod tests {
         );
         // The phase span captures where EVAL began.
         assert_eq!(
-            s.phases,
+            s.phases.iter().copied().collect::<Vec<_>>(),
             vec![PhaseSpan {
                 step: 5,
                 phase: Phase::Eval
             }]
         );
         // Checkpoints are recorded (previously dropped).
-        assert_eq!(s.checkpoints, vec![6]);
+        assert_eq!(s.checkpoints.iter().copied().collect::<Vec<_>>(), vec![6]);
     }
 
     #[test]
     fn phase_at_resolves_active_span() {
-        let spans = [
+        let spans: VecDeque<PhaseSpan> = [
             PhaseSpan {
                 step: 10,
                 phase: Phase::Eval,
@@ -605,8 +604,10 @@ mod tests {
                 step: 20,
                 phase: Phase::Train,
             },
-        ];
-        assert_eq!(phase_at(&[], 5), Phase::Train); // default before any span
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(phase_at(&VecDeque::new(), 5), Phase::Train); // default
         assert_eq!(phase_at(&spans, 5), Phase::Train);
         assert_eq!(phase_at(&spans, 15), Phase::Eval);
         assert_eq!(phase_at(&spans, 25), Phase::Train);
