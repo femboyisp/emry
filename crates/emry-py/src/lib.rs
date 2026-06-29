@@ -55,8 +55,9 @@ mod native {
         }
 
         /// Registers (or looks up) a metric name, returning its id for `emit`.
-        fn register(&self, name: &str) -> PyResult<u16> {
-            Ok(self.handle()?.register(name).index())
+        fn register(&mut self, name: &str) -> PyResult<u16> {
+            let handle = self.inner.as_mut().ok_or_else(finished_err)?;
+            Ok(handle.register(name).index())
         }
 
         /// Fast path: emits pre-registered `(metric_id, value)` pairs for the

@@ -169,6 +169,14 @@ impl Engine {
         // Opening event; the worker persists and publishes it like any other.
         let _ = producer.push(Event::RunStarted(meta));
 
+        // Broadcast the up-front metric name table so stream observers (bus /
+        // sidecar socket — which carry MetricId, not names) can label metrics
+        // without an out-of-band table. Late registrations announce themselves.
+        let names = registry.lock().expect("registry poisoned").entries_from(0);
+        if !names.is_empty() {
+            let _ = producer.push(Event::MetricsRegistered { names });
+        }
+
         let worker = Worker {
             consumer,
             bus: Arc::clone(&bus),
@@ -227,12 +235,30 @@ impl RunHandle {
     }
 
     /// Registers (or looks up) a metric name, returning its [`MetricId`] for the
-    /// fast [`RunHandle::emit`] path. Slow path (takes the registry lock).
-    pub fn register(&self, name: &str) -> MetricId {
-        self.registry
+    /// fast [`RunHandle::emit`] path. A newly-registered name is announced on the
+    /// stream as [`Event::MetricsRegistered`] so observers can label it. Slow
+    /// path (takes the registry lock).
+    pub fn register(&mut self, name: &str) -> MetricId {
+        let (id, before) = {
+            let mut reg = self.registry.lock().expect("registry poisoned");
+            let before = reg.len();
+            (reg.register(name), before)
+        };
+        self.announce_new_names(before);
+        id
+    }
+
+    /// Pushes an [`Event::MetricsRegistered`] for any names registered at or
+    /// after `before` (no-op if nothing new was added).
+    fn announce_new_names(&mut self, before: usize) {
+        let names = self
+            .registry
             .lock()
             .expect("registry poisoned")
-            .register(name)
+            .entries_from(before);
+        if !names.is_empty() {
+            let _ = self.producer.push(Event::MetricsRegistered { names });
+        }
     }
 
     /// Fast path: emits pre-registered metric values for the current step, then
@@ -251,13 +277,16 @@ impl RunHandle {
     /// Slow path: emits metrics by name, registering any unseen names. Takes the
     /// registry lock; prefer [`RunHandle::emit`] on the hot path.
     pub fn emit_dynamic(&mut self, values: &HashMap<String, f64>) {
-        let resolved: Vec<(MetricId, f64)> = {
+        let (resolved, before) = {
             let mut reg = self.registry.lock().expect("registry poisoned");
-            values
+            let before = reg.len();
+            let resolved: Vec<(MetricId, f64)> = values
                 .iter()
                 .map(|(name, value)| (reg.register(name), *value))
-                .collect()
+                .collect();
+            (resolved, before)
         };
+        self.announce_new_names(before);
         self.emit(&resolved);
     }
 
@@ -413,13 +442,20 @@ impl Worker {
         if derived.is_empty() {
             return;
         }
-        let values: Vec<(MetricId, f64)> = {
-            let mut reg = self.registry.lock().expect("registry poisoned");
-            derived
-                .into_iter()
-                .map(|d| (reg.register(&d.name), d.value))
-                .collect()
-        };
+        let mut reg = self.registry.lock().expect("registry poisoned");
+        let before = reg.len();
+        let values: Vec<(MetricId, f64)> = derived
+            .into_iter()
+            .map(|d| (reg.register(&d.name), d.value))
+            .collect();
+        let new_names = reg.entries_from(before);
+        drop(reg);
+        // Announce any first-seen derived names (e.g. steps_per_sec) so live
+        // observers label them, before the batch that uses them.
+        if !new_names.is_empty() {
+            self.bus
+                .publish(&Event::MetricsRegistered { names: new_names });
+        }
         self.bus.publish(&Event::MetricsBatch {
             step,
             epoch,
@@ -548,11 +584,14 @@ mod tests {
 
         let events = lines(&dir.path().join(EVENTS_FILE));
         let metrics = lines(&dir.path().join(METRICS_FILE));
-        // RunStarted + 50 batches + RunFinished.
-        assert_eq!(events.len(), 52);
+        // RunStarted + MetricsRegistered + 50 batches + RunFinished.
+        assert_eq!(events.len(), 53);
         assert_eq!(metrics.len(), 50);
-        // First and last events are the lifecycle bookends.
+        // First events are the lifecycle bookends + the name table; last is finish.
         assert!(events[0].contains("RUN_STARTED"));
+        assert!(events[1].contains("METRICS_REGISTERED"));
+        // The name table carries the registered names (so stream observers label).
+        assert!(events[1].contains("loss") && events[1].contains("lr"));
         assert!(events.last().unwrap().contains("RUN_FINISHED"));
         // Metric rows carry resolved names.
         assert!(metrics[0].contains("\"loss\""));

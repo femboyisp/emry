@@ -120,6 +120,15 @@ impl WebState {
                 self.checkpoints.push_back(*step);
                 cap(&mut self.checkpoints, DEFAULT_MARKERS);
             }
+            Event::MetricsRegistered { names } => {
+                for (id, name) in names {
+                    self.labels.insert(id.index(), name.clone());
+                    // Relabel any metric already tracked under the `m{id}` fallback.
+                    if let Some(m) = self.metrics.iter_mut().find(|m| m.id == id.index()) {
+                        m.label.clone_from(name);
+                    }
+                }
+            }
             Event::RunFinished { .. } => self.finished = true,
             Event::ConfigPatch(_) => {}
         }
@@ -230,6 +239,17 @@ mod tests {
             s.metrics[0].history.iter().copied().collect::<Vec<_>>(),
             vec![1.0, 0.5]
         );
+    }
+
+    #[test]
+    fn metrics_registered_seeds_and_relabels() {
+        let mut s = WebState::default();
+        s.apply(&batch(0, &[(0, 1.0)])); // first seen under the m{id} fallback
+        assert_eq!(s.metrics[0].label, "m0");
+        s.apply(&Event::MetricsRegistered {
+            names: vec![(MetricId(0), "loss".into())],
+        });
+        assert_eq!(s.metrics[0].label, "loss"); // relabeled from the name table
     }
 
     #[test]

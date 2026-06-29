@@ -85,6 +85,20 @@ impl MetricRegistry {
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
+
+    /// All `(id, name)` pairs in id order, for broadcasting a name table (see
+    /// [`Event::MetricsRegistered`](crate::Event::MetricsRegistered)). Pass a
+    /// `from` index to snapshot only the ids registered at or after it.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // ids are capped at MAX_METRICS ≤ u16::MAX
+    pub fn entries_from(&self, from: usize) -> Vec<(MetricId, String)> {
+        self.names
+            .iter()
+            .enumerate()
+            .skip(from)
+            .map(|(i, name)| (MetricId(i as u16), name.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
