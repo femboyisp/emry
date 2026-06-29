@@ -136,6 +136,138 @@ pub fn render_braille(data: &[f64], width: usize, height: usize) -> Vec<String> 
         .collect()
 }
 
+/// The blank braille cell (`U+2800`), an "empty" column with no plotted dots.
+pub const BRAILLE_BLANK: char = '\u{2800}';
+
+/// A step-based braille chart: the rendered rows plus the step value at each
+/// character column, so callers can align phase bands and checkpoint markers to
+/// the same x-axis the curve uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepChart {
+    /// Braille rows, top first (each `width` chars wide).
+    pub rows: Vec<String>,
+    /// Step value at each character column (length `width`).
+    pub col_steps: Vec<u64>,
+}
+
+/// Renders `values` (with their parallel `steps`, ascending) as a braille band
+/// chart whose x-axis is **step-based** — each point lands in the column for its
+/// step, so the curve aligns with phase bands and checkpoint markers drawn at
+/// the same steps. Empty columns carry the previous column forward so the line
+/// stays continuous. `steps` must be the same length as `values`.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)] // normalised values are small/bounded; step indices fit the grid
+pub fn render_braille_steps(
+    values: &[f64],
+    steps: &[u64],
+    width: usize,
+    height: usize,
+) -> StepChart {
+    if width == 0 || height == 0 {
+        return StepChart {
+            rows: Vec::new(),
+            col_steps: Vec::new(),
+        };
+    }
+    let blank = StepChart {
+        rows: vec![BRAILLE_BLANK.to_string().repeat(width); height],
+        col_steps: vec![0; width],
+    };
+    if values.is_empty() || steps.len() != values.len() {
+        return blank;
+    }
+
+    let s0 = steps[0];
+    let s1 = steps[steps.len() - 1];
+    let step_span = s1.saturating_sub(s0).max(1) as f64;
+
+    let dot_w = width * 2;
+    let dot_h = height * 4;
+
+    // Accumulate (min, max) per dot column, keyed by each point's step.
+    let mut cols: Vec<Option<(f64, f64)>> = vec![None; dot_w];
+    for (&v, &st) in values.iter().zip(steps) {
+        if !v.is_finite() {
+            continue;
+        }
+        let frac = (st.saturating_sub(s0) as f64) / step_span;
+        let col = (frac * (dot_w - 1) as f64)
+            .round()
+            .clamp(0.0, (dot_w - 1) as f64) as usize;
+        if let Some(slot) = cols.get_mut(col) {
+            *slot = Some(match *slot {
+                Some((lo, hi)) => (lo.min(v), hi.max(v)),
+                None => (v, v),
+            });
+        }
+    }
+    // Carry the last seen column forward across gaps so the line is continuous.
+    let mut last: Option<(f64, f64)> = None;
+    for slot in &mut cols {
+        if slot.is_none() {
+            *slot = last;
+        } else {
+            last = *slot;
+        }
+    }
+
+    let mut g_min = f64::INFINITY;
+    let mut g_max = f64::NEG_INFINITY;
+    for &v in values {
+        if v.is_finite() {
+            g_min = g_min.min(v);
+            g_max = g_max.max(v);
+        }
+    }
+    if !g_min.is_finite() {
+        return blank;
+    }
+    let span = if (g_max - g_min).abs() < f64::EPSILON {
+        1.0
+    } else {
+        g_max - g_min
+    };
+    let top_dot = (dot_h - 1) as f64;
+
+    let mut cells = vec![vec![0u8; width]; height];
+    for (dot_col, slot) in cols.iter().enumerate() {
+        let Some((min, max)) = *slot else { continue };
+        let cell_col = dot_col / 2;
+        let sub_col = dot_col % 2;
+        let to_row = |v: f64| (((v - g_min) / span) * top_dot).round().clamp(0.0, top_dot) as usize;
+        for y in to_row(min)..=to_row(max) {
+            let from_top = (dot_h - 1) - y;
+            cells[from_top / 4][cell_col] |= dot_bit(sub_col, from_top % 4);
+        }
+    }
+
+    let rows = cells
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|bits| char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' '))
+                .collect()
+        })
+        .collect();
+
+    // Step at the centre of each character column.
+    let col_steps = (0..width)
+        .map(|c| {
+            if width == 1 {
+                s0
+            } else {
+                s0 + ((c as f64 / (width - 1) as f64) * step_span).round() as u64
+            }
+        })
+        .collect();
+
+    StepChart { rows, col_steps }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +381,50 @@ mod tests {
         // Zero span must not divide by zero.
         let rows = render_braille(&[5.0; 50], 10, 3);
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn step_chart_dimensions_and_col_steps() {
+        let values: Vec<f64> = (0..100).map(f64::from).collect();
+        let steps: Vec<u64> = (0..100u64).map(|i| i * 10).collect(); // 0..990
+        let chart = render_braille_steps(&values, &steps, 40, 6);
+        assert_eq!(chart.rows.len(), 6);
+        assert!(chart.rows.iter().all(|r| r.chars().count() == 40));
+        assert_eq!(chart.col_steps.len(), 40);
+        // x-axis spans [first step, last step], ascending.
+        assert_eq!(chart.col_steps[0], 0);
+        assert_eq!(*chart.col_steps.last().unwrap(), 990);
+        assert!(chart.col_steps.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn step_chart_places_points_by_step_not_index() {
+        // Two points far apart in step land at the left and right edges, with a
+        // continuous (carried-forward) line between them.
+        let chart = render_braille_steps(&[1.0, 2.0], &[0, 1000], 20, 4);
+        assert_eq!(chart.rows.len(), 4);
+        // Every column has some dot (carry-forward fills the gap), so no fully
+        // blank column between the two endpoints.
+        let has_dot = |c: usize| {
+            chart
+                .rows
+                .iter()
+                .any(|r| r.chars().nth(c) != Some(BRAILLE_BLANK))
+        };
+        assert!(has_dot(0) && has_dot(19));
+    }
+
+    #[test]
+    fn step_chart_handles_edge_cases() {
+        assert!(render_braille_steps(&[], &[], 10, 3)
+            .rows
+            .iter()
+            .all(|r| r.chars().all(|c| c == BRAILLE_BLANK)));
+        assert!(render_braille_steps(&[1.0], &[5], 0, 3).rows.is_empty());
+        // Mismatched lengths fall back to blank rather than panicking.
+        assert_eq!(render_braille_steps(&[1.0, 2.0], &[0], 8, 2).rows.len(), 2);
+        // Single point / single column does not divide by zero.
+        let one = render_braille_steps(&[3.0], &[7], 1, 2);
+        assert_eq!(one.col_steps, vec![7]);
     }
 }
