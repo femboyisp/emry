@@ -15,8 +15,9 @@ your metrics, on your machine, in a file you can read.
 
 ![Emry's terminal dashboard streaming a live training run](docs/emry/assets/tui.gif)
 
-<sub>The terminal dashboard (`emry watch`) — live loss curve, metric cards,
-phase, and alerts.</sub>
+<sub>The terminal dashboard (`emry watch`) — live loss curve with a dashed
+amber baseline overlay for run comparison, phase bands, checkpoint markers,
+metric cards, and alerts. Full parity with the web dashboard.</sub>
 
 ![Emry's web dashboard with a live loss curve, baseline overlay, phase bands and checkpoint markers](docs/emry/assets/web.gif)
 
@@ -30,8 +31,10 @@ CDN; works air-gapped.</sub>
   harm the run.
 - **Event-sourced.** An append-only `events.jsonl` is the audit trail; a wide
   `metrics.jsonl` is plain JSONL you can read with `jq`, pandas, or anything.
-- **Observe live or after the fact.** A terminal dashboard, a self-hosted web
-  dashboard (no CDN — air-gap friendly), or just tail the files.
+- **Observe live or after the fact.** A terminal dashboard and a self-hosted web
+  dashboard (no CDN — air-gap friendly) at full parity — live chart, phase
+  bands, checkpoint markers, and a baseline overlay to **compare against a prior
+  run** — or just tail the files.
 - **Built for clusters.** Embedded, sidecar, or file modes; auto-detects
   SSH/SLURM. The training process survives an engine crash.
 
@@ -68,10 +71,11 @@ with the commands below.
 ## Observe a run
 
 ```bash
-emry runs                         # list runs under ./logs
-emry watch ./logs/llama-sft_…     # live terminal dashboard
-emry web   --run-dir ./logs/…     # live web dashboard at http://127.0.0.1:8787
-emry compare run_a/ run_b/        # final metrics side by side
+emry runs                                   # list runs under ./logs
+emry watch ./logs/llama-sft_…               # live terminal dashboard
+emry web   --run-dir ./logs/…               # live web dashboard at http://127.0.0.1:8787
+emry watch ./logs/new --compare ./logs/old  # overlay a prior run as a baseline (TUI or web)
+emry compare run_a/ run_b/                  # final metrics side by side
 emry export csv --run-dir ./logs/… --output history.csv
 ```
 
