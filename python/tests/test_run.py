@@ -14,15 +14,36 @@ class FakeBackend:
 
     def __init__(self):
         self.emitted = []  # (step, epoch, phase, values)
+        self.checkpoints = []  # (path, step)
         self.finished_at = None
         self.finish_reason = None
 
     def emit(self, step, epoch, phase, values):
         self.emitted.append((step, epoch, phase, values))
 
+    def checkpoint(self, path, step):
+        self.checkpoints.append((path, step))
+
     def finish(self, *, steps, reason):
         self.finished_at = steps
         self.finish_reason = reason
+
+
+def test_checkpoint_forwards_with_current_or_explicit_step():
+    fake = FakeBackend()
+    r = Run("p", fake)
+    r.emit(loss=1.0)
+    r.emit(loss=0.9)  # step is now 2
+    r.checkpoint("/ckpt/a.pt")  # defaults to the current step
+    r.checkpoint("/ckpt/b.pt", step=10)
+    assert fake.checkpoints == [("/ckpt/a.pt", 2), ("/ckpt/b.pt", 10)]
+
+
+def test_checkpoint_after_finish_raises():
+    r = Run("p", FakeBackend())
+    r.finish()
+    with pytest.raises(RuntimeError):
+        r.checkpoint("/ckpt/late.pt")
 
 
 def test_emit_coerces_and_forwards_with_advancing_step():
@@ -135,6 +156,21 @@ def test_jsonl_backend_writes_wire_compatible_run_dir(tmp_path):
     # summary.json records the step count.
     summary = json.loads((run_dir / "summary.json").read_text())
     assert summary["steps"] == 3 and summary["reason"] == "COMPLETED"
+
+
+def test_jsonl_backend_records_checkpoints_in_events_log(tmp_path):
+    with run("demo", metrics=["loss"], log_dir=str(tmp_path), mode="file") as r:
+        r.emit(loss=1.0)
+        r.checkpoint("/ckpt/step_1.pt")  # current step (1)
+    run_dir = next(tmp_path.iterdir())
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert events == [
+        {"type": "CHECKPOINT", "data": {"path": "/ckpt/step_1.pt", "step": 1}}
+    ]
 
 
 def test_package_exports():

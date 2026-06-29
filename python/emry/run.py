@@ -33,6 +33,9 @@ class Backend(Protocol):
     def emit(self, step: int, epoch: int, phase: Phase, values: dict[str, float]) -> None:
         """Records one step's coerced metric values."""
 
+    def checkpoint(self, path: str, step: int) -> None:
+        """Records that a checkpoint was written at `path` for `step`."""
+
     def finish(self, *, steps: int, reason: str) -> None:
         """Flushes and closes the run after `steps` emissions.
 
@@ -46,6 +49,9 @@ class NullBackend:
 
     def emit(self, step: int, epoch: int, phase: Phase, values: dict[str, float]) -> None:
         """Drops the metrics."""
+
+    def checkpoint(self, path: str, step: int) -> None:
+        """Drops the checkpoint."""
 
     def finish(self, *, steps: int, reason: str) -> None:
         """No-op."""
@@ -101,6 +107,16 @@ class Run:
         coerced = coerce_metrics(values)
         self._backend.emit(self._step, self._epoch, self._phase, coerced)
         self._step += 1
+
+    def checkpoint(self, path: str, *, step: Optional[int] = None) -> None:
+        """Records that a checkpoint was written at `path` — surfaced as a marker
+        on the dashboards. Defaults to the current step.
+
+        Raises ``RuntimeError`` if called after :meth:`finish`.
+        """
+        if self._finished:
+            raise RuntimeError("checkpoint() called after the run finished")
+        self._backend.checkpoint(path, self._step if step is None else step)
 
     def steps(self, total: int) -> Iterator[int]:
         """Yields ``0..total`` as loop sugar; each iteration is one expected emit."""

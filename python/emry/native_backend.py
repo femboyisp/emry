@@ -96,6 +96,9 @@ class NativeBackend:  # pragma: no cover - requires the compiled extension
             pairs.append((mid, value))
         self._handle.emit(pairs)
 
+    def checkpoint(self, path: str, step: int) -> None:
+        self._handle.checkpoint(path, step)
+
     def finish(self, *, steps: int, reason: str) -> None:
         # `steps` is intentionally ignored: the Rust engine owns the authoritative
         # step counter and writes it into summary.json. `reason` is also dropped

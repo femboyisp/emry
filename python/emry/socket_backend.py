@@ -66,6 +66,9 @@ class SocketBackend:
             pairs.append((mid, value))
         self._send(wire.metrics_batch(step, epoch, phase.value, pairs))
 
+    def checkpoint(self, path: str, step: int) -> None:
+        self._send(wire.checkpoint(path, step))
+
     def finish(self, *, steps: int, reason: str) -> None:
         try:
             self._send(wire.run_finished(time.time() - self._start_secs, reason))

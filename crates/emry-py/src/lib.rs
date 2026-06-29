@@ -85,6 +85,15 @@ mod native {
             Ok(())
         }
 
+        /// Records a checkpoint written at `path` for `step` (a dashboard marker).
+        fn checkpoint(&mut self, path: String, step: u64) -> PyResult<()> {
+            self.inner
+                .as_mut()
+                .ok_or_else(finished_err)?
+                .checkpoint(path, step);
+            Ok(())
+        }
+
         /// Sets the current epoch.
         fn set_epoch(&mut self, epoch: u32) -> PyResult<()> {
             self.inner
