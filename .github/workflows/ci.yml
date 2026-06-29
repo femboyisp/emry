@@ -18,7 +18,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.87"
+          toolchain: "1.88"
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
@@ -53,7 +53,7 @@ jobs:
       # compiles the native `emry._native` extension — needs the Rust toolchain.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.87"
+          toolchain: "1.88"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -76,7 +76,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.87"
+          toolchain: "1.88"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -110,7 +110,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.87"
+          toolchain: "1.88"
           components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
