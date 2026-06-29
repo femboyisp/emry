@@ -69,6 +69,33 @@ jobs:
       - name: Pytest with coverage
         run: pytest
 
+  # Real-PyTorch integration: install CPU torch and run the full suite so
+  # test_torch_integration (skipped elsewhere via importorskip) actually runs.
+  torch:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-ubuntu2204"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + CPU PyTorch
+        run: |
+          pip install -e ".[dev]"
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Pytest (incl. real-torch integration)
+        run: pytest
+
   wheels:
     runs-on: ubuntu-22.04
     steps:
