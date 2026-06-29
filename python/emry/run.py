@@ -112,8 +112,12 @@ class Run:
         coerced = coerce_metrics(values)
         if self._gpu is not None:
             # GPU stats are sampled here (training thread), throttled to ~1/s;
-            # {} between samples. Already floats, so no coercion needed.
-            coerced.update(self._gpu.sample())
+            # {} between samples (already floats, no coercion). A user-supplied
+            # metric of the same name wins — never silently clobber their data.
+            sample = self._gpu.sample()
+            if sample:
+                sample.update(coerced)
+                coerced = sample
         self._backend.emit(self._step, self._epoch, self._phase, coerced)
         self._step += 1
 

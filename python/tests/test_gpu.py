@@ -38,13 +38,16 @@ def test_throttles_to_one_query_per_interval():
 
 
 def test_failure_disables_sampling_silently():
+    now = {"t": 0.0}
+
     def boom():
         raise OSError("nvidia-smi exploded")
 
-    s = GpuSampler(runner=boom, clock=lambda: 0.0)
+    s = GpuSampler(interval=1.0, runner=boom, clock=lambda: now["t"])
     assert s.sample() == {}  # no raise
-    # Disabled thereafter even once time advances.
-    s._last = float("-inf")
+    # Advance well past the interval: still {}, proving the disabled flag (not
+    # the throttle) suppresses the retry.
+    now["t"] = 100.0
     assert s.sample() == {}
 
 
@@ -79,3 +82,18 @@ def test_run_merges_gpu_metrics_into_emit(tmp_path):
     assert rows[0]["values"]["loss"] == 1.0
     assert rows[0]["values"]["gpu0_util"] == 90.0
     assert rows[0]["values"]["gpu0_mem_pct"] == pytest.approx(50.0)
+
+
+def test_user_metric_wins_over_gpu_sample_on_collision(tmp_path):
+    sampler = GpuSampler(runner=lambda: "0, 90, 8192, 16384, 70\n", clock=lambda: 0.0)
+    sampler._interval = 0.0
+    with run(
+        "gpu-clash", metrics=["loss"], mode="file", log_dir=str(tmp_path), gpu=sampler
+    ) as r:
+        r.emit(gpu0_util=12.0)  # user explicitly reports this name
+
+    import json
+
+    run_dir = next(tmp_path.iterdir())
+    row = json.loads((run_dir / "metrics.jsonl").read_text().splitlines()[0])
+    assert row["values"]["gpu0_util"] == 12.0  # user value, not the sampler's 90
