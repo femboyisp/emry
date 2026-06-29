@@ -257,7 +257,30 @@ fn cmd_demo(steps: u64) -> Result<(), Box<dyn Error>> {
         run.finish().ok();
     });
 
-    run_dashboard(&events, &labels, Vec::new())
+    // A synthetic prior run (slower-decaying loss) overlaid as the amber
+    // comparison baseline, so the demo also exercises `--compare`.
+    let baseline = demo_baseline(steps);
+    run_dashboard(&events, &labels, baseline)
+}
+
+/// A synthetic prior-run baseline for the demo's `loss` / `loss_ema` curves.
+fn demo_baseline(steps: u64) -> Vec<emry_tui::BaselineSeries> {
+    let stride = (steps / 400).max(1);
+    let (mut s, mut v) = (Vec::new(), Vec::new());
+    let mut step = 0;
+    while step < steps {
+        #[allow(clippy::cast_precision_loss)]
+        let loss = 2.3 / (1.0 + step as f64 * 0.0032);
+        s.push(step);
+        v.push(loss);
+        step += stride;
+    }
+    let series = |label: &str| emry_tui::BaselineSeries {
+        label: label.to_string(),
+        steps: s.clone(),
+        values: v.clone(),
+    };
+    vec![series("loss"), series("loss_ema")]
 }
 
 /// `emry watch PATH` — tail a run directory's `metrics.jsonl` into the dashboard.
