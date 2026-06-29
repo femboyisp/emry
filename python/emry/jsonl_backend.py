@@ -23,6 +23,7 @@ __all__ = ["JsonlBackend"]
 RUN_META_FILE = "run.meta"
 CONFIG_FILE = "config.json"
 METRICS_FILE = "metrics.jsonl"
+EVENTS_FILE = "events.jsonl"
 SUMMARY_FILE = "summary.json"
 
 
@@ -88,6 +89,13 @@ class JsonlBackend:
         row = {"step": step, "epoch": epoch, "phase": phase.value, "values": values}
         self._metrics.write(json.dumps(row) + "\n")
         self._metrics.flush()  # keep the file live for `emry watch`
+
+    def checkpoint(self, path: str, step: int) -> None:
+        """Appends a ``Checkpoint`` event to ``events.jsonl`` (adjacently-tagged,
+        matching the Rust schema)."""
+        event = {"type": "CHECKPOINT", "data": {"path": path, "step": step}}
+        with (self._run_dir / EVENTS_FILE).open("a", encoding="utf-8") as events:
+            events.write(json.dumps(event) + "\n")
 
     def finish(self, *, steps: int, reason: str = "COMPLETED") -> None:
         """Writes ``summary.json`` and closes ``metrics.jsonl``."""

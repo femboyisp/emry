@@ -33,6 +33,31 @@ def test_metrics_batch_wire_shape():
     }
 
 
+def test_checkpoint_wire_shape():
+    assert wire.checkpoint("/ckpt/step_5.pt", 5) == {
+        "type": "CHECKPOINT",
+        "data": {"path": "/ckpt/step_5.pt", "step": 5},
+    }
+
+
+def test_socket_backend_sends_checkpoint_frame():
+    server, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    backend = SocketBackend(client, start_secs=0.0)
+    backend.checkpoint("/ckpt/step_3.pt", 3)
+    client.close()
+    received = bytearray()
+    while True:
+        chunk = server.recv(65536)
+        if not chunk:
+            break
+        received.extend(chunk)
+    server.close()
+    events = decode_frames(bytes(received))
+    assert events == [
+        {"type": "CHECKPOINT", "data": {"path": "/ckpt/step_3.pt", "step": 3}}
+    ]
+
+
 def test_frame_roundtrips_through_msgpack():
     ev = wire.run_finished(12.0, "COMPLETED")
     framed = wire.frame(ev)

@@ -19,6 +19,7 @@ __all__ = [
     "frame",
     "metrics_batch",
     "phase_change",
+    "checkpoint",
     "run_finished",
 ]
 
@@ -61,6 +62,11 @@ def metrics_batch(
 def phase_change(phase: str) -> dict:
     """A ``PhaseChange`` event."""
     return {"type": "PHASE_CHANGE", "data": phase}
+
+
+def checkpoint(path: str, step: int) -> dict:
+    """A ``Checkpoint`` event."""
+    return {"type": "CHECKPOINT", "data": {"path": path, "step": step}}
 
 
 def run_finished(duration_secs: float, reason: str) -> dict:
