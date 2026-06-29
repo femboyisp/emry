@@ -379,8 +379,20 @@ fn cmd_web(
         (None, Some(sock)) => (spawn_socket_reader(sock)?, Vec::new()),
         (None, None) => return Err("specify --run-dir or --socket".into()),
     };
+    // Load the comparison baseline via the one canonical reader
+    // (`emry_store::load_baseline`) and map it into the web crate's serializable
+    // types — same path the TUI overlay uses, so behaviour is consistent.
     let baseline = match compare {
-        Some(path) => Some(emry_web::load_baseline(path)?),
+        Some(path) => Some(emry_web::Baseline {
+            metrics: emry_store::load_baseline(path)?
+                .into_iter()
+                .map(|s| emry_web::BaselineSeries {
+                    label: s.label,
+                    steps: s.steps,
+                    values: s.values,
+                })
+                .collect(),
+        }),
         None => None,
     };
 
