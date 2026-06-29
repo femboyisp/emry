@@ -51,8 +51,21 @@ def test_observer_command_tui_targets():
     assert live.observer_command("tui", run_dir=None, socket_path=None) is None
 
 
-def test_observer_command_web_not_available_yet():
-    assert live.observer_command("web", run_dir=Path("/logs/r"), socket_path=None) is None
+def test_observer_command_web_targets():
+    assert live.observer_command("web", run_dir=Path("/logs/r"), socket_path=None) == [
+        "emry",
+        "web",
+        "--run-dir",
+        "/logs/r",
+    ]
+    # Socket takes precedence over run_dir, same as the TUI observer.
+    assert live.observer_command("web", run_dir=Path("/logs/r"), socket_path="/s.sock") == [
+        "emry",
+        "web",
+        "--socket",
+        "/s.sock",
+    ]
+    assert live.observer_command("web", run_dir=None, socket_path=None) is None
 
 
 def test_spawn_observers_builds_argv_without_launching(monkeypatch):
@@ -70,11 +83,19 @@ def test_spawn_observers_builds_argv_without_launching(monkeypatch):
     assert kwargs.get("start_new_session") is True
 
 
-def test_spawn_observers_warns_on_web(monkeypatch):
-    monkeypatch.setattr(live.subprocess, "Popen", lambda *a, **k: None)
-    with pytest.warns(UserWarning, match="not available"):
-        procs = live.spawn_observers(["web"], run_dir=Path("/logs/r"), socket_path=None)
-    assert procs == []
+def test_spawn_observers_web_launches_and_prints_url(monkeypatch, capsys):
+    calls = []
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            calls.append(cmd)
+
+    monkeypatch.setattr(live.subprocess, "Popen", FakePopen)
+    procs = live.spawn_observers(["web"], run_dir=Path("/logs/r"), socket_path=None)
+    assert len(procs) == 1
+    assert calls[0] == ["emry", "web", "--run-dir", "/logs/r"]
+    # The web URL is surfaced (the server's own line is detached to DEVNULL).
+    assert "http://127.0.0.1:8787" in capsys.readouterr().err
 
 
 def test_spawn_observers_warns_on_missing_binary(monkeypatch):
