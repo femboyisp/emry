@@ -71,6 +71,7 @@ class Run:
         metrics: Optional[Iterable[str]] = None,
         config: Optional[Mapping[str, Any]] = None,
         gpu: object = None,
+        alert_webhook: object = None,
     ) -> None:
         self.project = project
         self.metrics = list(metrics or [])
@@ -81,6 +82,9 @@ class Run:
         self._phase = Phase.TRAIN
         self._finished = False
         self._gpu = _resolve_gpu(gpu)
+        from emry.alerts import resolve as _resolve_notifier
+
+        self._notifier = _resolve_notifier(alert_webhook, project=project)
 
     @property
     def step(self) -> int:
@@ -118,6 +122,8 @@ class Run:
             if sample:
                 sample.update(coerced)
                 coerced = sample
+        if self._notifier is not None:
+            self._notifier.check(coerced, self._step)
         self._backend.emit(self._step, self._epoch, self._phase, coerced)
         self._step += 1
 
@@ -198,6 +204,7 @@ def run(
     mode: object = None,
     log_dir: Optional[str] = None,
     gpu: object = "auto",
+    alert_webhook: object = None,
     backend: Optional[Backend] = None,
 ) -> Run:
     """Starts a run and returns its [`Run`] handle.
@@ -208,10 +215,19 @@ def run(
     the caller is in full control.
 
     `gpu` controls GPU metric sampling: `"auto"` (default) samples `nvidia-smi`
-    when it's available, `True`/`False` force it on/off.
+    when it's available, `True`/`False` force it on/off. `alert_webhook` (or the
+    `EMRY_ALERT_WEBHOOK` env var) POSTs a Slack-compatible message when a metric
+    goes non-finite.
     """
+    import os
+
+    if alert_webhook is None:
+        alert_webhook = os.environ.get("EMRY_ALERT_WEBHOOK")
+
     if backend is not None:
-        return Run(project, backend, metrics=metrics, config=config, gpu=gpu)
+        return Run(
+            project, backend, metrics=metrics, config=config, gpu=gpu, alert_webhook=alert_webhook
+        )
 
     backend = _default_backend(
         project,
@@ -221,7 +237,9 @@ def run(
         log_dir=log_dir,
     )
     _spawn_live(live, backend)
-    return Run(project, backend, metrics=metrics, config=config, gpu=gpu)
+    return Run(
+        project, backend, metrics=metrics, config=config, gpu=gpu, alert_webhook=alert_webhook
+    )
 
 
 def _spawn_live(live: object, backend: Backend) -> None:
