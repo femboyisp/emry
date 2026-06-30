@@ -63,7 +63,9 @@ takes any metrics as keyword arguments. Mark phases with
 the epoch automatically. Values are duck-typed — tensors and numpy scalars are
 coerced, so you can pass `loss` directly without `.item()`. When an NVIDIA GPU is
 present, Emry samples `nvidia-smi` automatically and charts GPU utilization,
-memory, and temperature alongside your metrics (`gpu=False` to disable).
+memory, and temperature alongside your metrics (`gpu=False` to disable). Pass
+`alert_webhook=` (or set `EMRY_ALERT_WEBHOOK`) to get a Slack/Discord ping the
+moment a metric goes NaN/Inf.
 
 By default Emry writes a run directory under `./logs/` and, when attached to a
 TTY, brings up the live terminal dashboard. Set `EMRY_MODE` (`embedded` |
