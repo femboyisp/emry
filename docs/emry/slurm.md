@@ -130,6 +130,33 @@ srun python train.py
 wait "$ENGINE_PID"
 ```
 
+### Shortcut: `emry slurm-wrap`
+
+The start-engine / wait-for-socket / run / drain dance above is boilerplate, so
+Emry ships it as one command. `emry slurm-wrap` starts the sidecar engine, sets
+`EMRY_MODE=sidecar` and `EMRY_SOCKET` for the child, runs your training command
+after `--`, then drains and cleans up — propagating the command's exit code:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=llama-sft
+#SBATCH --nodes=1
+#SBATCH --gpus=8
+#SBATCH --time=24:00:00
+
+set -euo pipefail
+
+emry slurm-wrap \
+  --project llama-sft \
+  --log-dir "$SCRATCH/emry-logs" \
+  -- srun python train.py
+```
+
+The socket defaults to `$TMPDIR/emry-$SLURM_JOB_ID.sock` (falling back to the
+wrapper's pid off-cluster); pass `--socket` to override. Everything after `--`
+is run verbatim as the training command with stdio inherited. Use the manual
+form above when you need finer control over the engine's lifetime.
+
 ## 4. Observe the run live
 
 The engine writes `metrics.jsonl` into the shared `--log-dir`, so you can watch
