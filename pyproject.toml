@@ -32,6 +32,9 @@ socket = ["msgpack>=1.0"]
 # Tensor coercion is duck-typed (no hard torch import); this extra is a
 # convenience for `pip install emry[torch]`.
 torch = ["torch"]
+# Post-hoc export of a finished run directory to Weights & Biases
+# (`emry.export_wandb.to_wandb`); imported lazily so it is never a hard dep.
+wandb = ["wandb"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
