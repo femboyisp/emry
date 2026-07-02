@@ -20,3 +20,9 @@ logs/
 # The docs/emry/ subtree IS published (user-facing runbooks & guides).
 /docs/*
 !/docs/emry/
+
+# Claude Code agent worktrees
+.claude/worktrees/
+
+# Compiled native extension (built locally via maturin)
+python/emry/_native*.so

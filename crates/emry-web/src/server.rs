@@ -10,6 +10,7 @@
 //! per-event) keeps the browser update rate bounded regardless of emit rate.
 
 use crate::baseline::Baseline;
+use crate::security::{serve_router, WebSecurity};
 use crate::state::WebState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -139,7 +140,7 @@ pub fn spawn_state_with_labels(
 ///
 /// Returns an [`std::io::Error`] if the address cannot be bound or serving fails.
 pub async fn serve(addr: SocketAddr, events: Receiver<Event>) -> std::io::Result<()> {
-    serve_with_labels(addr, events, &[]).await
+    serve_with_labels(addr, events, &[], WebSecurity::default()).await
 }
 
 /// Like [`serve`], but seeds metric `labels` for real metric names. Serves no
@@ -153,10 +154,10 @@ pub async fn serve_with_labels(
     addr: SocketAddr,
     events: Receiver<Event>,
     labels: &[(MetricId, &str)],
+    security: WebSecurity,
 ) -> std::io::Result<()> {
     let state = spawn_state_with_labels(events, labels);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app(state)).await
+    serve_router(addr, app(state), security).await
 }
 
 /// Like [`serve_with_labels`], but also serves a comparison `baseline` (a prior
@@ -170,10 +171,10 @@ pub async fn serve_with_baseline(
     events: Receiver<Event>,
     labels: &[(MetricId, &str)],
     baseline: Baseline,
+    security: WebSecurity,
 ) -> std::io::Result<()> {
     let state = spawn_state_with_labels(events, labels);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app_with_baseline(state, Arc::new(baseline))).await
+    serve_router(addr, app_with_baseline(state, Arc::new(baseline)), security).await
 }
 
 #[cfg(test)]
