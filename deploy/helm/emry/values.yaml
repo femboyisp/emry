@@ -23,6 +23,10 @@ projectName: emry
 # configured under `logs` below and passed to `emry web --project <path>`.
 logsMountPath: /logs
 
+# Interface the dashboard binds inside the pod. Must be 0.0.0.0 for the kubelet
+# probes and Service to reach it; only change if you know what you're doing.
+host: "0.0.0.0"
+
 service:
   type: ClusterIP
   # The dashboard HTTP port. Passed to `emry web --port`.

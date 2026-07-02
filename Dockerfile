@@ -60,4 +60,6 @@ ENTRYPOINT ["/usr/bin/tini", "--", "emry"]
 # Serve the multi-run project dashboard over /logs. NOTE: `emry web` takes the
 # log directory via `--project <PATH>` (there is no separate --log-dir flag for
 # the web subcommand); `--project` is the directory it scans for runs.
-CMD ["web", "--project", "/logs", "--port", "8787"]
+# --host 0.0.0.0 so the dashboard is reachable from outside the container; set
+# EMRY_AUTH_TOKEN (and TLS) when exposing it beyond localhost.
+CMD ["web", "--project", "/logs", "--port", "8787", "--host", "0.0.0.0"]

@@ -48,6 +48,10 @@ spec:
             - {{ .Values.logsMountPath | quote }}
             - "--port"
             - {{ .Values.service.port | quote }}
+            # Bind all interfaces so the kubelet probes and Service (which reach
+            # the pod IP, not loopback) can connect. Pair with auth.token/TLS.
+            - "--host"
+            - {{ .Values.host | default "0.0.0.0" | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
