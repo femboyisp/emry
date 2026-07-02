@@ -725,6 +725,25 @@ fn slurm_socket_path(
     tmp.join(format!("emry-{tag}.sock"))
 }
 
+/// Maps a finished command's [`ExitStatus`] to a shell-style exit code.
+///
+/// A normal exit uses its own code; a signal death (the common SLURM case —
+/// SIGKILL on OOM, SIGTERM at the time limit) maps to `128 + signal` so callers
+/// can tell "the script failed" from "the scheduler killed it".
+#[cfg(unix)]
+fn command_exit_code(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    status
+        .code()
+        .or_else(|| status.signal().map(|sig| 128 + sig))
+        .unwrap_or(1)
+}
+
+#[cfg(not(unix))]
+fn command_exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
+}
+
 /// `emry slurm-wrap … -- <cmd>` — run `<cmd>` with a sidecar engine, then drain.
 ///
 /// Diverges via [`std::process::exit`] with the training command's exit code on
@@ -776,12 +795,22 @@ fn cmd_slurm_wrap(
         return Err("slurm-wrap: engine did not bind the socket within 10s".into());
     }
 
-    // Run the training command, pointed at the sidecar.
-    let status = std::process::Command::new(cmd0)
+    // Run the training command, pointed at the sidecar. If it can't even be
+    // spawned (typo/missing exe), reap the engine first so we don't orphan it.
+    let status = match std::process::Command::new(cmd0)
         .args(args)
         .env("EMRY_MODE", "sidecar")
         .env("EMRY_SOCKET", &socket)
-        .status()?;
+        .status()
+    {
+        Ok(status) => status,
+        Err(err) => {
+            let _ = engine.kill();
+            let _ = engine.wait();
+            let _ = std::fs::remove_file(&socket);
+            return Err(format!("slurm-wrap: failed to run `{cmd0}`: {err}").into());
+        }
+    };
 
     // Give the engine time to drain on RUN_FINISHED, then terminate it if it is
     // still blocked on accept() (e.g. the command never connected).
@@ -799,7 +828,7 @@ fn cmd_slurm_wrap(
     let _ = engine.wait();
     let _ = std::fs::remove_file(&socket);
 
-    std::process::exit(status.code().unwrap_or(1)); // propagate the command's code
+    std::process::exit(command_exit_code(status)); // propagate the command's code
 }
 
 fn clap_exit_code(code: i32) -> ExitCode {
@@ -952,6 +981,22 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_exit_code_maps_normal_and_signal_death() {
+        use std::os::unix::process::ExitStatusExt;
+        // Normal exit keeps its own code (wait status encodes it in the high byte).
+        assert_eq!(
+            command_exit_code(std::process::ExitStatus::from_raw(3 << 8)),
+            3
+        );
+        // Signal death (e.g. SIGKILL=9, an OOM kill) maps to 128 + signal.
+        assert_eq!(
+            command_exit_code(std::process::ExitStatus::from_raw(9)),
+            128 + 9
+        );
     }
 
     #[test]
