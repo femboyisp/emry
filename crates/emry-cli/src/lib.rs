@@ -886,6 +886,26 @@ mod tests {
     }
 
     #[test]
+    fn load_project_tolerates_a_run_without_metrics() {
+        use std::sync::atomic::AtomicU32;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("emry-cli-proj2-{}-{n}", std::process::id()));
+        // A run with run.meta but no metrics.jsonl must not abort the view.
+        let dir = base.join("broken_100");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("run.meta"),
+            "{\"run_id\":\"00000000-0000-0000-0000-000000000000\",\"project\":\"broken\",\"start_time_secs\":100,\"mode\":\"file\"}",
+        )
+        .unwrap();
+        let project = load_project(&base).unwrap();
+        std::fs::remove_dir_all(&base).ok();
+        assert_eq!(project.runs.len(), 1);
+        assert!(project.runs[0].metrics.is_empty()); // degraded, not aborted
+    }
+
+    #[test]
     fn export_csv_parses_and_requires_run_dir() {
         assert!(parse(&["emry", "export", "csv"]).is_err());
         match parse(&["emry", "export", "csv", "--run-dir", "./logs/run"]).unwrap() {
