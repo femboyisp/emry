@@ -494,6 +494,14 @@ fn cmd_web(
 
     // --project serves the static multi-run overlay instead of a live run.
     if let Some(dir) = project {
+        // The project overlay requires an admin token; a viewer-only config
+        // would lock everyone out, so warn rather than fail silently.
+        if security.viewer_token.is_some() && security.token.is_none() {
+            eprintln!(
+                "warning: the --project dashboard requires an admin token, but only a \
+                 viewer token is set — no one will be able to access it. Set --auth-token."
+            );
+        }
         let project = load_project(dir)?;
         eprintln!("emry web (project) on {scheme}://{addr}");
         let runtime = tokio::runtime::Runtime::new()?;
