@@ -73,6 +73,10 @@ pub enum Commands {
         /// Prior run directory (or `metrics.jsonl`) to overlay as a baseline.
         #[arg(long)]
         compare: Option<PathBuf>,
+        /// Log directory: serve the multi-run project dashboard (overlay every
+        /// run) instead of a single live run.
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
     /// List the runs found under a log directory.
     Runs {
@@ -159,11 +163,13 @@ fn dispatch(command: Commands) -> ExitCode {
             socket,
             port,
             compare,
+            project,
         } => cmd_web(
             run_dir.as_deref(),
             socket.as_deref(),
             port,
             compare.as_deref(),
+            project.as_deref(),
         ),
         Commands::Runs { log_dir } => cmd_runs(log_dir.as_deref()),
         Commands::Compare { run_a, run_b } => cmd_compare(&run_a, &run_b),
@@ -389,7 +395,19 @@ fn cmd_web(
     socket: Option<&Path>,
     port: u16,
     compare: Option<&Path>,
+    project: Option<&Path>,
 ) -> Result<(), Box<dyn Error>> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+    // --project serves the static multi-run overlay instead of a live run.
+    if let Some(dir) = project {
+        let project = load_project(dir)?;
+        eprintln!("emry web (project) on http://{addr}");
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(emry_web::serve_project(addr, project))?;
+        return Ok(());
+    }
+
     // Holds the run-dir poller's stop flag + handle so it can be shut down on
     // return (including an early bind error) rather than leaked.
     let mut tailer_shutdown: Option<(Arc<AtomicBool>, std::thread::JoinHandle<()>)> = None;
@@ -419,7 +437,6 @@ fn cmd_web(
         None => None,
     };
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let label_refs: Vec<(MetricId, &str)> = labels
         .iter()
         .map(|(id, name)| (*id, name.as_str()))
@@ -441,6 +458,30 @@ fn cmd_web(
     }
     result?;
     Ok(())
+}
+
+/// Loads every run under `base` into a [`emry_web::Project`] snapshot (via the
+/// canonical `list_runs` + `load_baseline` readers), newest first.
+fn load_project(base: &Path) -> Result<emry_web::Project, Box<dyn Error>> {
+    let runs = emry_store::list_runs(base)?
+        .into_iter()
+        .map(|info| {
+            let metrics = emry_store::load_baseline(&base.join(&info.dir_name))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| emry_web::ProjectSeries {
+                    label: s.label,
+                    steps: s.steps,
+                    values: s.values,
+                })
+                .collect();
+            emry_web::ProjectRun {
+                name: info.dir_name,
+                metrics,
+            }
+        })
+        .collect();
+    Ok(emry_web::Project { runs })
 }
 
 /// `emry runs` — list the runs under a log directory (default `./logs`).
@@ -770,9 +811,12 @@ mod tests {
                 socket,
                 port,
                 compare,
+                project,
             } => {
                 assert_eq!(port, 8787);
-                assert!(run_dir.is_none() && socket.is_none() && compare.is_none());
+                assert!(
+                    run_dir.is_none() && socket.is_none() && compare.is_none() && project.is_none()
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -800,12 +844,65 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+        match parse(&["emry", "web", "--project", "./logs"]).unwrap() {
+            Commands::Web { project, .. } => {
+                assert_eq!(project, Some(PathBuf::from("./logs")));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
     fn web_with_no_target_errors() {
-        // Pure validation path (no runtime started): both targets absent errors.
-        assert!(cmd_web(None, None, 8787, None).is_err());
+        // Pure validation path (no runtime started): all targets absent errors.
+        assert!(cmd_web(None, None, 8787, None, None).is_err());
+    }
+
+    #[test]
+    fn load_project_collects_runs_newest_first() {
+        use std::sync::atomic::AtomicU32;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("emry-cli-proj-{}-{n}", std::process::id()));
+        for (name, start) in [("old", 100u64), ("new", 200u64)] {
+            let dir = base.join(format!("{name}_{start}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("run.meta"),
+                format!("{{\"run_id\":\"00000000-0000-0000-0000-000000000000\",\"project\":\"{name}\",\"start_time_secs\":{start},\"mode\":\"file\"}}"),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("metrics.jsonl"),
+                "{\"step\":0,\"epoch\":0,\"phase\":\"TRAIN\",\"values\":{\"loss\":1.0}}\n",
+            )
+            .unwrap();
+        }
+        let project = load_project(&base).unwrap();
+        std::fs::remove_dir_all(&base).ok();
+        assert_eq!(project.runs.len(), 2);
+        assert!(project.runs[0].name.starts_with("new_")); // newest first
+        assert_eq!(project.runs[0].metrics[0].label, "loss");
+    }
+
+    #[test]
+    fn load_project_tolerates_a_run_without_metrics() {
+        use std::sync::atomic::AtomicU32;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("emry-cli-proj2-{}-{n}", std::process::id()));
+        // A run with run.meta but no metrics.jsonl must not abort the view.
+        let dir = base.join("broken_100");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("run.meta"),
+            "{\"run_id\":\"00000000-0000-0000-0000-000000000000\",\"project\":\"broken\",\"start_time_secs\":100,\"mode\":\"file\"}",
+        )
+        .unwrap();
+        let project = load_project(&base).unwrap();
+        std::fs::remove_dir_all(&base).ok();
+        assert_eq!(project.runs.len(), 1);
+        assert!(project.runs[0].metrics.is_empty()); // degraded, not aborted
     }
 
     #[test]

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emry — project</title>
+    <style>
+      :root {
+        --cream: #f5f0e8;
+        --terracotta: #c4714a;
+        --amber: #d99a4a;
+        --warm-gray: #6b6560;
+        --bg: #1a1714;
+        --panel: #221e1a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        background: var(--bg);
+        color: var(--cream);
+      }
+      header {
+        display: flex;
+        gap: 1.25rem;
+        align-items: baseline;
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--warm-gray);
+      }
+      header .project { color: var(--terracotta); font-weight: bold; }
+      header .meta { color: var(--warm-gray); }
+      main { padding: 1rem; display: grid; gap: 1rem; }
+      .metrics { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; }
+      .metric {
+        cursor: pointer;
+        padding: 0.2rem 0.5rem;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        color: var(--cream);
+      }
+      .metric.selected { border-color: var(--terracotta); color: var(--terracotta); }
+      .row { display: grid; grid-template-columns: 1fr 240px; gap: 1rem; align-items: start; }
+      .chart-wrap {
+        background: var(--panel);
+        border: 1px solid var(--warm-gray);
+        border-radius: 6px;
+        padding: 0.5rem;
+      }
+      .chart-title { color: var(--terracotta); margin-bottom: 0.25rem; font-size: 0.9rem; }
+      canvas { width: 100%; height: 420px; display: block; }
+      .legend {
+        background: var(--panel);
+        border: 1px solid var(--warm-gray);
+        border-radius: 6px;
+        padding: 0.5rem;
+        max-height: 440px;
+        overflow-y: auto;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.15rem 0.25rem;
+        cursor: pointer;
+        font-size: 0.8rem;
+        border-radius: 3px;
+      }
+      .legend-item.off { opacity: 0.4; }
+      .swatch { width: 12px; height: 12px; border-radius: 2px; flex: 0 0 auto; }
+      .empty { color: var(--warm-gray); padding: 2rem; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="project" id="project">emry</span>
+      <span class="meta" id="summary">loading…</span>
+    </header>
+    <main>
+      <div class="metrics" id="metrics"></div>
+      <div class="row">
+        <div class="chart-wrap">
+          <div class="chart-title" id="chart-title">—</div>
+          <canvas id="chart" width="900" height="420"></canvas>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="empty" id="empty" hidden>no runs found under this directory</div>
+    </main>
+
+    <script>
+      // Self-hosted, dependency-free (no CDN — respects air-gap). Overlays every
+      // run's series for the selected metric on one canvas.
+      const PALETTE = [
+        "#c4714a", "#d99a4a", "#8ca99c", "#b07a9c",
+        "#6b8c9c", "#7a8450", "#cf9f6b", "#a0685a",
+      ];
+      const els = {
+        project: document.getElementById("project"),
+        summary: document.getElementById("summary"),
+        metrics: document.getElementById("metrics"),
+        legend: document.getElementById("legend"),
+        title: document.getElementById("chart-title"),
+        canvas: document.getElementById("chart"),
+        empty: document.getElementById("empty"),
+      };
+      const ctx = els.canvas.getContext("2d");
+      let runs = []; // [{name, metrics:[{label,steps,values}]}]
+      let selected = null; // metric label
+      const hidden = new Set(); // run names toggled off
+
+      function metricLabels() {
+        const seen = new Set();
+        const out = [];
+        for (const r of runs)
+          for (const m of r.metrics)
+            if (!seen.has(m.label)) { seen.add(m.label); out.push(m.label); }
+        return out;
+      }
+
+      function color(i) { return PALETTE[i % PALETTE.length]; }
+
+      function renderMetrics() {
+        els.metrics.innerHTML = "";
+        for (const label of metricLabels()) {
+          const el = document.createElement("div");
+          el.className = "metric" + (label === selected ? " selected" : "");
+          el.textContent = label;
+          el.onclick = () => { selected = label; render(); };
+          els.metrics.appendChild(el);
+        }
+      }
+
+      function renderLegend() {
+        els.legend.innerHTML = "";
+        runs.forEach((r, i) => {
+          const item = document.createElement("div");
+          item.className = "legend-item" + (hidden.has(r.name) ? " off" : "");
+          const sw = document.createElement("span");
+          sw.className = "swatch";
+          sw.style.background = color(i);
+          const name = document.createElement("span");
+          name.textContent = r.name;
+          item.append(sw, name);
+          item.onclick = () => {
+            if (hidden.has(r.name)) hidden.delete(r.name); else hidden.add(r.name);
+            render();
+          };
+          els.legend.appendChild(item);
+        });
+      }
+
+      function seriesFor(run) {
+        return run.metrics.find((m) => m.label === selected) || null;
+      }
+
+      function drawChart() {
+        const w = els.canvas.width, h = els.canvas.height, pad = 34;
+        ctx.clearRect(0, 0, w, h);
+        // Visible runs that have the selected metric.
+        const visible = runs
+          .map((r, i) => ({ r, i, s: seriesFor(r) }))
+          .filter((x) => x.s && x.s.values.length && !hidden.has(x.r.name));
+        if (!visible.length) return;
+
+        let s0 = Infinity, s1 = -Infinity, vmin = Infinity, vmax = -Infinity;
+        for (const { s } of visible) {
+          for (const st of s.steps) { if (st < s0) s0 = st; if (st > s1) s1 = st; }
+          for (const v of s.values) if (Number.isFinite(v)) { if (v < vmin) vmin = v; if (v > vmax) vmax = v; }
+        }
+        if (!Number.isFinite(vmin)) return;
+        const stepSpan = s1 - s0 || 1, span = vmax - vmin || 1;
+        const x = (st) => pad + ((st - s0) / stepSpan) * (w - 2 * pad);
+        const y = (v) => h - pad - ((v - vmin) / span) * (h - 2 * pad);
+
+        // gridlines at min/max
+        ctx.strokeStyle = "#6b6560";
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.moveTo(pad, y(vmin)); ctx.lineTo(w - pad, y(vmin));
+        ctx.moveTo(pad, y(vmax)); ctx.lineTo(w - pad, y(vmax));
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        for (const { s, i } of visible) {
+          ctx.strokeStyle = color(i);
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          s.values.forEach((v, k) => {
+            if (!Number.isFinite(v)) return;
+            const px = x(s.steps[k]), py = y(v);
+            k ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+          });
+          ctx.stroke();
+        }
+
+        // y labels
+        ctx.font = "11px monospace";
+        const label = (t, yy) => {
+          const tw = ctx.measureText(t).width;
+          ctx.fillStyle = "#221e1a";
+          ctx.fillRect(2, yy - 9, tw + 4, 12);
+          ctx.fillStyle = "#6b6560";
+          ctx.fillText(t, 3, yy);
+        };
+        label(vmax.toPrecision(4), y(vmax) + 9);
+        label(vmin.toPrecision(4), y(vmin) - 2);
+      }
+
+      function render() {
+        renderMetrics();
+        renderLegend();
+        const n = runs.length;
+        els.summary.textContent = `${n} run${n === 1 ? "" : "s"}`;
+        els.empty.hidden = n > 0;
+        els.title.textContent = selected ? `${selected} — overlay across ${n} runs` : "—";
+        drawChart();
+      }
+
+      fetch("/project")
+        .then((r) => r.json())
+        .then((data) => {
+          runs = (data && data.runs) || [];
+          const labels = metricLabels();
+          selected = labels.includes("loss") ? "loss" : labels[0] || null;
+          render();
+        })
+        .catch(() => { els.summary.textContent = "failed to load"; });
+    </script>
+  </body>
+</html>
