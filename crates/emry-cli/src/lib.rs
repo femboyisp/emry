@@ -440,7 +440,12 @@ fn web_security(
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
 ) -> emry_web::WebSecurity {
+    // Treat an empty `--auth-token` as absent *before* the env fallback, so
+    // `--auth-token "$EMRY_AUTH_TOKEN"` (which the shell expands to `""` when the
+    // var is unset) still picks up a value set later in the environment rather
+    // than silently disabling auth.
     let token = auth_token
+        .filter(|t| !t.is_empty())
         .or_else(|| std::env::var("EMRY_AUTH_TOKEN").ok())
         .filter(|t| !t.is_empty());
     // clap's `requires` guarantees these arrive together, but zip is robust.
@@ -463,6 +468,14 @@ fn cmd_web(
     } else {
         "http"
     };
+    // Loudly flag the footgun: a non-loopback bind with no token means anyone
+    // who can reach this host can read the metrics.
+    if !addr.ip().is_loopback() && security.token.is_none() {
+        eprintln!(
+            "warning: serving on {addr} with no auth token — anyone who can reach \
+             this host can view the dashboard. Set --auth-token or EMRY_AUTH_TOKEN."
+        );
+    }
 
     // --project serves the static multi-run overlay instead of a live run.
     if let Some(dir) = project {
@@ -1174,7 +1187,15 @@ mod tests {
         );
         assert_eq!(sec.token.as_deref(), Some("tok"));
         assert!(sec.tls.is_some());
-        // No token, no TLS ⇒ fully open (empty string is treated as unset).
+
+        // An empty `--auth-token` (e.g. `"$EMRY_AUTH_TOKEN"` with the var set)
+        // must NOT disable auth — it falls through to the env value.
+        std::env::set_var("EMRY_AUTH_TOKEN", "from-env");
+        let sec = web_security(Some(String::new()), None, None);
+        assert_eq!(sec.token.as_deref(), Some("from-env"));
+
+        // With no flag and no env, the dashboard is fully open (the default).
+        std::env::remove_var("EMRY_AUTH_TOKEN");
         let sec = web_security(Some(String::new()), None, None);
         assert!(sec.token.is_none() && sec.tls.is_none());
     }

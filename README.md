@@ -87,10 +87,14 @@ The dashboard binds loopback and is unauthenticated by default. To expose it
 (e.g. from a container), bind a public interface and turn on auth + TLS:
 
 ```bash
+export EMRY_AUTH_TOKEN=$(openssl rand -hex 32)   # require this token; /healthz stays open
 emry web --project ./logs --host 0.0.0.0 \
-  --auth-token "$EMRY_AUTH_TOKEN" \        # or set EMRY_AUTH_TOKEN; /healthz stays open
-  --tls-cert cert.pem --tls-key key.pem    # serve HTTPS from your own PEM files
+  --tls-cert cert.pem --tls-key key.pem          # serve HTTPS from your own PEM files
 ```
+
+Prefer the `EMRY_AUTH_TOKEN` env var over `--auth-token` so the token stays out
+of your shell history and process list. Binding a non-loopback `--host` without
+a token prints a warning — anyone who can reach the host can read the metrics.
 
 On a cluster, run the engine as a sidecar so observability outlives the training
 process — see the [SLURM runbook](docs/emry/slurm.md).

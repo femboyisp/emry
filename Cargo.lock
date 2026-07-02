@@ -904,6 +904,7 @@ dependencies = [
  "axum-server",
  "crossbeam-channel",
  "emry-core",
+ "form_urlencoded",
  "http-body-util",
  "serde",
  "serde_json",

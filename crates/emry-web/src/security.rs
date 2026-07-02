@@ -78,10 +78,13 @@ fn presented_token(req: &Request) -> Option<String> {
             return Some(tok.to_string());
         }
     }
+    // The WebSocket upgrade can't set headers, so accept `?token=`. Parse with
+    // form_urlencoded so the value is percent-decoded and `&` inside other
+    // params can't confuse the split — a token with spaces/`%`/`+` still matches.
     req.uri().query().and_then(|q| {
-        q.split('&')
-            .find_map(|kv| kv.strip_prefix("token="))
-            .map(str::to_string)
+        form_urlencoded::parse(q.as_bytes())
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.into_owned())
     })
 }
 
@@ -227,6 +230,20 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(presented_token(&req).as_deref(), Some("fromquery"));
+
+        // Query token is percent-decoded, so tokens with spaces/`+`/`%` match.
+        let req = Request::builder()
+            .uri("/ws?token=a%20b%2Bc")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(presented_token(&req).as_deref(), Some("a b+c"));
+
+        // A `token`-suffixed param name (e.g. `xtoken`) is not mistaken for it.
+        let req = Request::builder()
+            .uri("/ws?xtoken=nope")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(presented_token(&req), None);
 
         // Non-bearer auth scheme is ignored.
         let req = Request::builder()
