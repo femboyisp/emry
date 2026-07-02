@@ -109,6 +109,24 @@ pub enum Commands {
         #[arg(long)]
         log_dir: Option<PathBuf>,
     },
+    /// Wrap a training command with a sidecar engine (the SLURM pattern).
+    ///
+    /// Starts `emry engine`, points the command at it via `EMRY_MODE=sidecar` +
+    /// `EMRY_SOCKET`, runs it, then drains and cleans up.
+    SlurmWrap {
+        /// Project / experiment name (names the run directory).
+        #[arg(long, default_value = "run")]
+        project: String,
+        /// Socket path (default `$TMPDIR/emry-{SLURM_JOB_ID|pid}.sock`).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// Base log directory passed to the engine (default `./logs`).
+        #[arg(long)]
+        log_dir: Option<PathBuf>,
+        /// The training command to run, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 /// Output formats for `emry export`.
@@ -179,6 +197,12 @@ fn dispatch(command: Commands) -> ExitCode {
             socket,
             log_dir,
         } => cmd_engine(&project, &socket, log_dir.as_deref()),
+        Commands::SlurmWrap {
+            project,
+            socket,
+            log_dir,
+            command,
+        } => cmd_slurm_wrap(&project, socket.as_deref(), log_dir.as_deref(), &command),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -684,6 +708,100 @@ fn cmd_engine(
     Ok(())
 }
 
+/// Resolves the sidecar socket path: explicit `--socket`, else
+/// `{tmp}/emry-{tag}.sock` where `tag` is the SLURM job id (if set) or the pid.
+fn slurm_socket_path(
+    explicit: Option<&Path>,
+    job_id: Option<String>,
+    tmp: &Path,
+    pid: u32,
+) -> PathBuf {
+    if let Some(path) = explicit {
+        return path.to_path_buf();
+    }
+    let tag = job_id
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| pid.to_string());
+    tmp.join(format!("emry-{tag}.sock"))
+}
+
+/// `emry slurm-wrap … -- <cmd>` — run `<cmd>` with a sidecar engine, then drain.
+///
+/// Diverges via [`std::process::exit`] with the training command's exit code on
+/// success; returns [`Err`] only for setup failures (engine won't start/bind).
+fn cmd_slurm_wrap(
+    project: &str,
+    socket: Option<&Path>,
+    log_dir: Option<&Path>,
+    command: &[String],
+) -> Result<(), Box<dyn Error>> {
+    let (cmd0, args) = command
+        .split_first()
+        .ok_or("slurm-wrap: no command given after `--`")?;
+    let socket = slurm_socket_path(
+        socket,
+        std::env::var("SLURM_JOB_ID").ok(),
+        &std::env::temp_dir(),
+        std::process::id(),
+    );
+    let _ = std::fs::remove_file(&socket); // clear a stale socket so bind succeeds
+
+    // Start the engine as a child of *this* executable (no reliance on `emry`
+    // being on PATH).
+    let exe = std::env::current_exe()?;
+    let mut engine_cmd = std::process::Command::new(&exe);
+    engine_cmd
+        .args(["engine", "--project", project, "--socket"])
+        .arg(&socket);
+    if let Some(dir) = log_dir {
+        engine_cmd.arg("--log-dir").arg(dir);
+    }
+    let mut engine = engine_cmd.spawn()?;
+
+    // Wait (bounded) for the engine to bind the socket.
+    let mut bound = false;
+    for _ in 0..200 {
+        if socket.exists() {
+            bound = true;
+            break;
+        }
+        if let Ok(Some(status)) = engine.try_wait() {
+            return Err(format!("slurm-wrap: engine exited before binding ({status})").into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !bound {
+        let _ = engine.kill();
+        let _ = engine.wait();
+        return Err("slurm-wrap: engine did not bind the socket within 10s".into());
+    }
+
+    // Run the training command, pointed at the sidecar.
+    let status = std::process::Command::new(cmd0)
+        .args(args)
+        .env("EMRY_MODE", "sidecar")
+        .env("EMRY_SOCKET", &socket)
+        .status()?;
+
+    // Give the engine time to drain on RUN_FINISHED, then terminate it if it is
+    // still blocked on accept() (e.g. the command never connected).
+    let mut drained = false;
+    for _ in 0..100 {
+        if matches!(engine.try_wait(), Ok(Some(_))) {
+            drained = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !drained {
+        let _ = engine.kill();
+    }
+    let _ = engine.wait();
+    let _ = std::fs::remove_file(&socket);
+
+    std::process::exit(status.code().unwrap_or(1)); // propagate the command's code
+}
+
 fn clap_exit_code(code: i32) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
@@ -801,6 +919,70 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn slurm_wrap_captures_command_after_dashdash() {
+        // The training command lives after `--`; flags before it are the wrapper's.
+        match parse(&[
+            "emry",
+            "slurm-wrap",
+            "--project",
+            "llama",
+            "--socket",
+            "/tmp/w.sock",
+            "--",
+            "python",
+            "train.py",
+            "--lr",
+            "1e-4",
+        ])
+        .unwrap()
+        {
+            Commands::SlurmWrap {
+                project,
+                socket,
+                log_dir,
+                command,
+            } => {
+                assert_eq!(project, "llama");
+                assert_eq!(socket, Some(PathBuf::from("/tmp/w.sock")));
+                assert!(log_dir.is_none());
+                assert_eq!(command, ["python", "train.py", "--lr", "1e-4"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slurm_wrap_requires_a_command() {
+        // Defaults are fine, but an empty command (nothing after `--`) is rejected.
+        assert!(parse(&["emry", "slurm-wrap"]).is_err());
+        assert!(parse(&["emry", "slurm-wrap", "--"]).is_err());
+    }
+
+    #[test]
+    fn slurm_socket_path_prefers_explicit_then_job_id_then_pid() {
+        let tmp = Path::new("/tmp");
+        // Explicit --socket wins outright.
+        assert_eq!(
+            slurm_socket_path(Some(Path::new("/x/y.sock")), Some("42".into()), tmp, 7),
+            PathBuf::from("/x/y.sock")
+        );
+        // Otherwise the SLURM job id names the socket.
+        assert_eq!(
+            slurm_socket_path(None, Some("42".into()), tmp, 7),
+            PathBuf::from("/tmp/emry-42.sock")
+        );
+        // No job id (or an empty one) falls back to the pid.
+        assert_eq!(
+            slurm_socket_path(None, None, tmp, 7),
+            PathBuf::from("/tmp/emry-7.sock")
+        );
+        assert_eq!(
+            slurm_socket_path(None, Some(String::new()), tmp, 7),
+            PathBuf::from("/tmp/emry-7.sock")
+        );
     }
 
     #[test]
