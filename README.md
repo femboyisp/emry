@@ -96,6 +96,10 @@ Prefer the `EMRY_AUTH_TOKEN` env var over `--auth-token` so the token stays out
 of your shell history and process list. Binding a non-loopback `--host` without
 a token prints a warning — anyone who can reach the host can read the metrics.
 
+`EMRY_AUTH_TOKEN` is the full-access (admin) token. For read-only access, hand
+out `EMRY_VIEWER_TOKEN` (`--viewer-token`): viewers can watch a single run's
+dashboard but not the multi-run `--project` overlay, which requires admin.
+
 On a cluster, run the engine as a sidecar so observability outlives the training
 process — see the [SLURM runbook](docs/emry/slurm.md).
 

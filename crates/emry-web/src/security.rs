@@ -29,44 +29,89 @@ pub struct TlsConfig {
     pub key: PathBuf,
 }
 
-/// Opt-in dashboard security: an optional bearer `token` and optional `tls`.
+/// Access role a token grants. `Admin` outranks `Viewer` (derived `Ord` follows
+/// declaration order), so an admin satisfies any viewer-level requirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    /// Read a single run's live dashboard.
+    Viewer,
+    /// Everything a viewer can, plus the multi-run project dashboard.
+    Admin,
+}
+
+/// Opt-in dashboard security: bearer tokens (per role) and optional `tls`.
 ///
 /// [`WebSecurity::default`] is fully open plain HTTP — the historical behavior.
+/// `token` is the full-access (admin) token; `viewer_token` grants read-only
+/// access to single-run dashboards but not the project overlay.
 #[derive(Debug, Clone, Default)]
 pub struct WebSecurity {
-    /// Bearer token required on every route except `/healthz`. `None` ⇒ open.
+    /// Full-access bearer token (admin). `None` ⇒ no admin token.
     pub token: Option<String>,
+    /// Read-only bearer token (viewer): single-run dashboards only.
+    pub viewer_token: Option<String>,
     /// TLS cert/key to serve HTTPS. `None` ⇒ plain HTTP.
     pub tls: Option<TlsConfig>,
 }
 
-impl WebSecurity {
-    /// Wraps `router` with token-auth middleware when a token is configured;
-    /// otherwise returns it unchanged.
-    pub fn apply(&self, router: Router) -> Router {
-        match &self.token {
-            Some(token) => router.layer(axum::middleware::from_fn_with_state(
-                Arc::new(token.clone()),
-                require_token,
-            )),
-            None => router,
+/// Middleware state: the configured tokens and the minimum role this server
+/// requires. Held behind the layer so each request can resolve its role.
+#[derive(Clone)]
+struct AuthState {
+    admin: Option<Arc<String>>,
+    viewer: Option<Arc<String>>,
+    min_role: Role,
+}
+
+impl AuthState {
+    /// Resolves a presented token to the role it grants, if any (constant-time
+    /// compared against each configured token).
+    fn role_of(&self, presented: &str) -> Option<Role> {
+        if let Some(admin) = &self.admin {
+            if ct_eq(presented.as_bytes(), admin.as_bytes()) {
+                return Some(Role::Admin);
+            }
         }
+        if let Some(viewer) = &self.viewer {
+            if ct_eq(presented.as_bytes(), viewer.as_bytes()) {
+                return Some(Role::Viewer);
+            }
+        }
+        None
     }
 }
 
-/// Middleware: allow `/healthz` unauthenticated; otherwise require a bearer
-/// token (header or `?token=` query) matching `expected`.
-async fn require_token(
-    State(expected): State<Arc<String>>,
+impl WebSecurity {
+    /// Wraps `router` with role-aware auth middleware requiring at least
+    /// `min_role`. With no tokens configured the router is returned unchanged
+    /// (fully open — the historical default).
+    pub fn apply(&self, router: Router, min_role: Role) -> Router {
+        if self.token.is_none() && self.viewer_token.is_none() {
+            return router;
+        }
+        let state = AuthState {
+            admin: self.token.clone().map(Arc::new),
+            viewer: self.viewer_token.clone().map(Arc::new),
+            min_role,
+        };
+        router.layer(axum::middleware::from_fn_with_state(state, require_role))
+    }
+}
+
+/// Middleware: `/healthz` is always open; otherwise the presented token must map
+/// to a role that meets the server's `min_role` (401 if unknown, 403 if too low).
+async fn require_role(
+    State(auth): State<AuthState>,
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let ok = req.uri().path() == "/healthz"
-        || presented_token(&req).is_some_and(|tok| ct_eq(tok.as_bytes(), expected.as_bytes()));
-    if ok {
-        Ok(next.run(req).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
+    if req.uri().path() == "/healthz" {
+        return Ok(next.run(req).await);
+    }
+    match presented_token(&req).and_then(|tok| auth.role_of(&tok)) {
+        Some(role) if role >= auth.min_role => Ok(next.run(req).await),
+        Some(_) => Err(StatusCode::FORBIDDEN),
+        None => Err(StatusCode::UNAUTHORIZED),
     }
 }
 
@@ -101,7 +146,8 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Serves `router` on `addr`, applying `security` (token layer + TLS choice).
+/// Serves `router` on `addr`, applying `security` (role-aware token layer
+/// requiring at least `min_role` + TLS choice).
 ///
 /// # Errors
 ///
@@ -111,8 +157,9 @@ pub(crate) async fn serve_router(
     addr: SocketAddr,
     router: Router,
     security: WebSecurity,
+    min_role: Role,
 ) -> std::io::Result<()> {
-    let app = security.apply(router);
+    let app = security.apply(router, min_role);
     if let Some(tls) = &security.tls {
         let config = RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
         axum_server::bind_rustls(addr, config)
@@ -136,17 +183,25 @@ mod tests {
         assert!(ct_eq(b"", b""));
     }
 
-    fn guarded_router() -> Router {
+    fn routes() -> Router {
         use axum::routing::get;
+        Router::new()
+            .route("/", get(|| async { "ok" }))
+            .route("/healthz", get(|| async { "ok" }))
+    }
+
+    /// Admin token `s3cret`, viewer token `peek`, requiring at least `min_role`.
+    fn secured(min_role: Role) -> Router {
         WebSecurity {
             token: Some("s3cret".into()),
+            viewer_token: Some("peek".into()),
             tls: None,
         }
-        .apply(
-            Router::new()
-                .route("/", get(|| async { "ok" }))
-                .route("/healthz", get(|| async { "ok" })),
-        )
+        .apply(routes(), min_role)
+    }
+
+    fn guarded_router() -> Router {
+        secured(Role::Viewer)
     }
 
     async fn status(router: Router, uri: &str, auth: Option<&str>) -> StatusCode {
@@ -197,9 +252,10 @@ mod tests {
 
     #[tokio::test]
     async fn no_token_configured_leaves_router_open() {
+        // Even an admin-gated server is open when no tokens are configured.
         assert_eq!(
             status(
-                WebSecurity::default().apply(guarded_router_inner()),
+                WebSecurity::default().apply(routes(), Role::Admin),
                 "/",
                 None
             )
@@ -208,9 +264,37 @@ mod tests {
         );
     }
 
-    fn guarded_router_inner() -> Router {
-        use axum::routing::get;
-        Router::new().route("/", get(|| async { "ok" }))
+    #[tokio::test]
+    async fn rbac_gates_admin_routes_from_viewers() {
+        // On an admin-required server (the project overlay):
+        // admin token → 200, viewer token → 403, unknown → 401.
+        assert_eq!(
+            status(secured(Role::Admin), "/", Some("Bearer s3cret")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(secured(Role::Admin), "/", Some("Bearer peek")).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(secured(Role::Admin), "/", Some("Bearer nope")).await,
+            StatusCode::UNAUTHORIZED
+        );
+        // On a viewer-required server (single-run), the viewer token is enough,
+        // and an admin (higher role) still passes.
+        assert_eq!(
+            status(secured(Role::Viewer), "/", Some("Bearer peek")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(secured(Role::Viewer), "/", Some("Bearer s3cret")).await,
+            StatusCode::OK
+        );
+        // /healthz stays open on the admin server too.
+        assert_eq!(
+            status(secured(Role::Admin), "/healthz", None).await,
+            StatusCode::OK
+        );
     }
 
     #[test]

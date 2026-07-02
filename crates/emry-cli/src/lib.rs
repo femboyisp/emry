@@ -81,10 +81,14 @@ pub enum Commands {
         /// run) instead of a single live run.
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Require this bearer token on every route except `/healthz` (falls
-        /// back to the `EMRY_AUTH_TOKEN` env var). Unset ⇒ no auth.
+        /// Full-access (admin) bearer token required on every route except
+        /// `/healthz` (falls back to `EMRY_AUTH_TOKEN`). Unset ⇒ no auth.
         #[arg(long)]
         auth_token: Option<String>,
+        /// Read-only (viewer) bearer token: single-run dashboards only, not the
+        /// `--project` overlay (falls back to `EMRY_VIEWER_TOKEN`).
+        #[arg(long)]
+        viewer_token: Option<String>,
         /// PEM certificate chain to serve HTTPS (requires `--tls-key`).
         #[arg(long, requires = "tls_key")]
         tls_cert: Option<PathBuf>,
@@ -198,6 +202,7 @@ fn dispatch(command: Commands) -> ExitCode {
             compare,
             project,
             auth_token,
+            viewer_token,
             tls_cert,
             tls_key,
         } => cmd_web(
@@ -206,7 +211,7 @@ fn dispatch(command: Commands) -> ExitCode {
             SocketAddr::new(host, port),
             compare.as_deref(),
             project.as_deref(),
-            web_security(auth_token, tls_cert, tls_key),
+            web_security(auth_token, viewer_token, tls_cert, tls_key),
         ),
         Commands::Runs { log_dir } => cmd_runs(log_dir.as_deref()),
         Commands::Compare { run_a, run_b } => cmd_compare(&run_a, &run_b),
@@ -433,26 +438,36 @@ fn spawn_socket_reader(sock: &Path) -> Result<Receiver<Event>, Box<dyn Error>> {
 
 /// `emry web` — serve the live dashboard for a run directory (`--run-dir`) or a
 /// sidecar socket (`--socket`), optionally overlaying a `--compare` baseline.
+/// Resolves an `emry web` token flag to its value, applying the env-var
+/// fallback. An empty flag is treated as absent *before* the fallback, so
+/// `--auth-token "$EMRY_AUTH_TOKEN"` (which the shell expands to `""` when the
+/// var is unset) still picks up a value set later in the environment rather than
+/// silently disabling auth.
+fn resolve_token(flag: Option<String>, env_var: &str) -> Option<String> {
+    flag.filter(|t| !t.is_empty())
+        .or_else(|| std::env::var(env_var).ok())
+        .filter(|t| !t.is_empty())
+}
+
 /// Resolves the `emry web` security flags into a [`emry_web::WebSecurity`],
-/// applying the `EMRY_AUTH_TOKEN` env fallback and pairing the TLS paths.
+/// applying the env-var fallbacks and pairing the TLS paths.
 fn web_security(
     auth_token: Option<String>,
+    viewer_token: Option<String>,
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
 ) -> emry_web::WebSecurity {
-    // Treat an empty `--auth-token` as absent *before* the env fallback, so
-    // `--auth-token "$EMRY_AUTH_TOKEN"` (which the shell expands to `""` when the
-    // var is unset) still picks up a value set later in the environment rather
-    // than silently disabling auth.
-    let token = auth_token
-        .filter(|t| !t.is_empty())
-        .or_else(|| std::env::var("EMRY_AUTH_TOKEN").ok())
-        .filter(|t| !t.is_empty());
+    let token = resolve_token(auth_token, "EMRY_AUTH_TOKEN");
+    let viewer_token = resolve_token(viewer_token, "EMRY_VIEWER_TOKEN");
     // clap's `requires` guarantees these arrive together, but zip is robust.
     let tls = tls_cert
         .zip(tls_key)
         .map(|(cert, key)| emry_web::TlsConfig { cert, key });
-    emry_web::WebSecurity { token, tls }
+    emry_web::WebSecurity {
+        token,
+        viewer_token,
+        tls,
+    }
 }
 
 fn cmd_web(
@@ -470,7 +485,7 @@ fn cmd_web(
     };
     // Loudly flag the footgun: a non-loopback bind with no token means anyone
     // who can reach this host can read the metrics.
-    if !addr.ip().is_loopback() && security.token.is_none() {
+    if !addr.ip().is_loopback() && security.token.is_none() && security.viewer_token.is_none() {
         eprintln!(
             "warning: serving on {addr} with no auth token — anyone who can reach \
              this host can view the dashboard. Set --auth-token or EMRY_AUTH_TOKEN."
@@ -479,6 +494,14 @@ fn cmd_web(
 
     // --project serves the static multi-run overlay instead of a live run.
     if let Some(dir) = project {
+        // The project overlay requires an admin token; a viewer-only config
+        // would lock everyone out, so warn rather than fail silently.
+        if security.viewer_token.is_some() && security.token.is_none() {
+            eprintln!(
+                "warning: the --project dashboard requires an admin token, but only a \
+                 viewer token is set — no one will be able to access it. Set --auth-token."
+            );
+        }
         let project = load_project(dir)?;
         eprintln!("emry web (project) on {scheme}://{addr}");
         let runtime = tokio::runtime::Runtime::new()?;
@@ -1097,6 +1120,7 @@ mod tests {
                 compare,
                 project,
                 auth_token,
+                viewer_token,
                 tls_cert,
                 tls_key,
             } => {
@@ -1105,7 +1129,12 @@ mod tests {
                 assert!(
                     run_dir.is_none() && socket.is_none() && compare.is_none() && project.is_none()
                 );
-                assert!(auth_token.is_none() && tls_cert.is_none() && tls_key.is_none());
+                assert!(
+                    auth_token.is_none()
+                        && viewer_token.is_none()
+                        && tls_cert.is_none()
+                        && tls_key.is_none()
+                );
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1175,29 +1204,42 @@ mod tests {
         }
         // --tls-cert without --tls-key is rejected (clap `requires`).
         assert!(parse(&["emry", "web", "--tls-cert", "cert.pem"]).is_err());
+        // The viewer token parses into its own field.
+        match parse(&["emry", "web", "--viewer-token", "peek"]).unwrap() {
+            Commands::Web { viewer_token, .. } => {
+                assert_eq!(viewer_token.as_deref(), Some("peek"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
     fn web_security_pairs_tls_and_honors_env_fallback() {
-        // Explicit token + paired TLS.
+        // Explicit admin + viewer tokens + paired TLS.
         let sec = web_security(
             Some("tok".into()),
+            Some("peek".into()),
             Some(PathBuf::from("c.pem")),
             Some(PathBuf::from("k.pem")),
         );
         assert_eq!(sec.token.as_deref(), Some("tok"));
+        assert_eq!(sec.viewer_token.as_deref(), Some("peek"));
         assert!(sec.tls.is_some());
 
         // An empty `--auth-token` (e.g. `"$EMRY_AUTH_TOKEN"` with the var set)
-        // must NOT disable auth — it falls through to the env value.
+        // must NOT disable auth — it falls through to the env value. Same for
+        // the viewer token.
         std::env::set_var("EMRY_AUTH_TOKEN", "from-env");
-        let sec = web_security(Some(String::new()), None, None);
+        std::env::set_var("EMRY_VIEWER_TOKEN", "viewer-env");
+        let sec = web_security(Some(String::new()), None, None, None);
         assert_eq!(sec.token.as_deref(), Some("from-env"));
+        assert_eq!(sec.viewer_token.as_deref(), Some("viewer-env"));
 
         // With no flag and no env, the dashboard is fully open (the default).
         std::env::remove_var("EMRY_AUTH_TOKEN");
-        let sec = web_security(Some(String::new()), None, None);
-        assert!(sec.token.is_none() && sec.tls.is_none());
+        std::env::remove_var("EMRY_VIEWER_TOKEN");
+        let sec = web_security(Some(String::new()), None, None, None);
+        assert!(sec.token.is_none() && sec.viewer_token.is_none() && sec.tls.is_none());
     }
 
     #[test]

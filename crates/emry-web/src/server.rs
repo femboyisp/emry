@@ -10,7 +10,7 @@
 //! per-event) keeps the browser update rate bounded regardless of emit rate.
 
 use crate::baseline::Baseline;
-use crate::security::{serve_router, WebSecurity};
+use crate::security::{serve_router, Role, WebSecurity};
 use crate::state::WebState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -157,7 +157,7 @@ pub async fn serve_with_labels(
     security: WebSecurity,
 ) -> std::io::Result<()> {
     let state = spawn_state_with_labels(events, labels);
-    serve_router(addr, app(state), security).await
+    serve_router(addr, app(state), security, Role::Viewer).await
 }
 
 /// Like [`serve_with_labels`], but also serves a comparison `baseline` (a prior
@@ -174,7 +174,13 @@ pub async fn serve_with_baseline(
     security: WebSecurity,
 ) -> std::io::Result<()> {
     let state = spawn_state_with_labels(events, labels);
-    serve_router(addr, app_with_baseline(state, Arc::new(baseline)), security).await
+    serve_router(
+        addr,
+        app_with_baseline(state, Arc::new(baseline)),
+        security,
+        Role::Viewer,
+    )
+    .await
 }
 
 #[cfg(test)]
