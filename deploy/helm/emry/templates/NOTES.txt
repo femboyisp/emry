@@ -1,0 +1,46 @@
+Emry dashboard {{ .Chart.AppVersion }} has been deployed as release {{ .Release.Name }}.
+
+The web server is running:
+
+    emry web --project {{ .Values.logsMountPath }} --port {{ .Values.service.port }}
+
+It serves the multi-run project dashboard over the logs volume mounted at
+{{ .Values.logsMountPath }} and exposes a liveness/readiness probe at GET /healthz.
+
+Reach the dashboard:
+{{- if .Values.ingress.enabled }}
+
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+  Watch the external IP be assigned:
+    kubectl get svc -w {{ include "emry.fullname" . }} --namespace {{ .Release.Namespace }}
+{{- else if eq .Values.service.type "NodePort" }}
+
+  export NODE_PORT=$(kubectl get -o jsonpath="{.spec.ports[0].nodePort}" svc {{ include "emry.fullname" . }} --namespace {{ .Release.Namespace }})
+  export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}" --namespace {{ .Release.Namespace }})
+  echo "http://$NODE_IP:$NODE_PORT"
+{{- else }}
+
+  Port-forward to your machine:
+    kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "emry.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+    # then open http://127.0.0.1:{{ .Values.service.port }}
+{{- end }}
+
+{{- if or .Values.auth.token .Values.auth.existingSecret }}
+
+Dashboard auth is ENABLED: requests must present the token from Secret
+"{{ include "emry.authSecretName" . }}" (key "{{ include "emry.authSecretKey" . }}"),
+wired into the container as EMRY_AUTH_TOKEN.
+{{- else }}
+
+Dashboard auth is DISABLED. Set `auth.token` (or `auth.existingSecret`) to gate
+access via EMRY_AUTH_TOKEN.
+{{- end }}
+
+{{- if and (not .Values.logs.existingClaim) (not .Values.logs.hostPath) }}
+
+WARNING: no persistent logs volume configured (using an ephemeral emptyDir).
+The dashboard will show no runs unless something populates {{ .Values.logsMountPath }}.
+Set `logs.existingClaim` (a PVC) or `logs.hostPath` to mount your run logs.
+{{- end }}

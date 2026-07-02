@@ -1,0 +1,114 @@
+# Default values for the emry chart.
+# This is a YAML-formatted file. Values are grouped by concern.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/femboyisp/emry
+  # Overrides the image tag; defaults to the chart appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The project/experiment name shown in the dashboard header. The web server is
+# launched as `emry web --project <logs mount> --port <service.port>`; this
+# value is passed via the EMRY_PROJECT env only for display context and does
+# not change the log directory (that is always the mounted /logs path).
+projectName: emry
+
+# Where the container reads run logs from. This path is mounted from the volume
+# configured under `logs` below and passed to `emry web --project <path>`.
+logsMountPath: /logs
+
+service:
+  type: ClusterIP
+  # The dashboard HTTP port. Passed to `emry web --port`.
+  port: 8787
+
+# Run-logs volume the dashboard reads. Choose ONE source:
+#   - existingClaim: mount a pre-existing PersistentVolumeClaim (recommended in
+#     a real cluster; the training jobs write run logs into the same PVC).
+#   - hostPath: mount a host directory (handy for single-node/dev clusters).
+# If neither is set, an ephemeral emptyDir is used (data is lost on restart and
+# there is nothing to display unless a sidecar populates it) — dev only.
+logs:
+  existingClaim: ""
+  hostPath: ""
+  # Only used when neither existingClaim nor hostPath is set.
+  emptyDir: {}
+
+# Dashboard authentication. When set, the container is given EMRY_AUTH_TOKEN,
+# which the web server (EMRY-061) uses to gate access.
+#   - Set `auth.token` to have the chart create a Secret holding the token.
+#   - Or set `auth.existingSecret` (+ optional key) to reference your own Secret.
+# Leave both empty to run the dashboard unauthenticated.
+auth:
+  token: ""
+  existingSecret: ""
+  existingSecretKey: token
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 10001
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: emry.local
+  path: /
+  pathType: Prefix
+  tls: []
+  #  - secretName: emry-tls
+  #    hosts:
+  #      - emry.local
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra environment variables to inject into the container.
+extraEnv: []

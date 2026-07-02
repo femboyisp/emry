@@ -153,3 +153,26 @@ jobs:
 
       - name: Run pre-commit
         run: pip install pre-commit && pre-commit run --all-files
+
+  # Lint + render the Helm chart so template/value regressions are caught in CI.
+  helm:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.3"
+
+      - name: Helm lint
+        run: helm lint deploy/helm/emry
+
+      - name: Helm template (default values)
+        run: helm template emry deploy/helm/emry
+
+      - name: Helm template (auth + ingress + PVC)
+        run: |
+          helm template emry deploy/helm/emry \
+            --set auth.token=ci-token \
+            --set ingress.enabled=true \
+            --set logs.existingClaim=emry-logs

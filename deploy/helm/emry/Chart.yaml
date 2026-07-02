@@ -1,0 +1,18 @@
+apiVersion: v2
+name: emry
+description: Emry live training-metrics dashboard — serves the multi-run web UI over a directory of run logs.
+type: application
+# Chart version — bump on chart changes.
+version: 0.1.0
+# The Emry release the default image tracks.
+appVersion: "0.1.0"
+home: https://github.com/femboyisp/emry
+sources:
+  - https://github.com/femboyisp/emry
+keywords:
+  - emry
+  - machine-learning
+  - metrics
+  - dashboard
+maintainers:
+  - name: femboyisp contributors
