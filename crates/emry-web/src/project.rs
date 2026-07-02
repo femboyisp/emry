@@ -57,14 +57,19 @@ async fn project_json(State(project): State<Arc<Project>>) -> impl IntoResponse 
     Json((*project).clone())
 }
 
-/// Binds `addr` and serves the project dashboard (a static snapshot of `project`).
+/// Binds `addr` and serves the project dashboard (a static snapshot of `project`),
+/// applying `security` (optional bearer token + TLS).
 ///
 /// # Errors
 ///
-/// Returns an [`std::io::Error`] if the address cannot be bound or serving fails.
-pub async fn serve_project(addr: SocketAddr, project: Project) -> std::io::Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app_project(Arc::new(project))).await
+/// Returns an [`std::io::Error`] if the address cannot be bound, the TLS material
+/// cannot be loaded, or serving fails.
+pub async fn serve_project(
+    addr: SocketAddr,
+    project: Project,
+    security: crate::security::WebSecurity,
+) -> std::io::Result<()> {
+    crate::security::serve_router(addr, app_project(Arc::new(project)), security).await
 }
 
 #[cfg(test)]

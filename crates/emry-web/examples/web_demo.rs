@@ -65,9 +65,15 @@ async fn main() {
         (MetricId(1), "lr"),
         (MetricId(2), "loss_ema"),
     ];
-    emry_web::serve_with_baseline("127.0.0.1:8788".parse().unwrap(), sub, &labels, baseline)
-        .await
-        .unwrap();
+    emry_web::serve_with_baseline(
+        "127.0.0.1:8788".parse().unwrap(),
+        sub,
+        &labels,
+        baseline,
+        emry_web::WebSecurity::default(),
+    )
+    .await
+    .unwrap();
 }
 
 /// A synthetic prior run whose loss decays a touch slower than the live run, so

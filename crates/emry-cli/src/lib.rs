@@ -67,9 +67,13 @@ pub enum Commands {
         /// Sidecar socket to read events from.
         #[arg(long)]
         socket: Option<PathBuf>,
-        /// TCP port to bind on `127.0.0.1`.
+        /// TCP port to bind.
         #[arg(long, default_value_t = 8787)]
         port: u16,
+        /// Host/IP to bind. Defaults to loopback; use `0.0.0.0` to expose the
+        /// dashboard (e.g. in a container). Pair with `--auth-token`/TLS.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: std::net::IpAddr,
         /// Prior run directory (or `metrics.jsonl`) to overlay as a baseline.
         #[arg(long)]
         compare: Option<PathBuf>,
@@ -77,6 +81,16 @@ pub enum Commands {
         /// run) instead of a single live run.
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Require this bearer token on every route except `/healthz` (falls
+        /// back to the `EMRY_AUTH_TOKEN` env var). Unset ⇒ no auth.
+        #[arg(long)]
+        auth_token: Option<String>,
+        /// PEM certificate chain to serve HTTPS (requires `--tls-key`).
+        #[arg(long, requires = "tls_key")]
+        tls_cert: Option<PathBuf>,
+        /// PEM private key to serve HTTPS (requires `--tls-cert`).
+        #[arg(long, requires = "tls_cert")]
+        tls_key: Option<PathBuf>,
     },
     /// List the runs found under a log directory.
     Runs {
@@ -180,14 +194,19 @@ fn dispatch(command: Commands) -> ExitCode {
             run_dir,
             socket,
             port,
+            host,
             compare,
             project,
+            auth_token,
+            tls_cert,
+            tls_key,
         } => cmd_web(
             run_dir.as_deref(),
             socket.as_deref(),
-            port,
+            SocketAddr::new(host, port),
             compare.as_deref(),
             project.as_deref(),
+            web_security(auth_token, tls_cert, tls_key),
         ),
         Commands::Runs { log_dir } => cmd_runs(log_dir.as_deref()),
         Commands::Compare { run_a, run_b } => cmd_compare(&run_a, &run_b),
@@ -414,21 +433,43 @@ fn spawn_socket_reader(sock: &Path) -> Result<Receiver<Event>, Box<dyn Error>> {
 
 /// `emry web` — serve the live dashboard for a run directory (`--run-dir`) or a
 /// sidecar socket (`--socket`), optionally overlaying a `--compare` baseline.
+/// Resolves the `emry web` security flags into a [`emry_web::WebSecurity`],
+/// applying the `EMRY_AUTH_TOKEN` env fallback and pairing the TLS paths.
+fn web_security(
+    auth_token: Option<String>,
+    tls_cert: Option<PathBuf>,
+    tls_key: Option<PathBuf>,
+) -> emry_web::WebSecurity {
+    let token = auth_token
+        .or_else(|| std::env::var("EMRY_AUTH_TOKEN").ok())
+        .filter(|t| !t.is_empty());
+    // clap's `requires` guarantees these arrive together, but zip is robust.
+    let tls = tls_cert
+        .zip(tls_key)
+        .map(|(cert, key)| emry_web::TlsConfig { cert, key });
+    emry_web::WebSecurity { token, tls }
+}
+
 fn cmd_web(
     run_dir: Option<&Path>,
     socket: Option<&Path>,
-    port: u16,
+    addr: SocketAddr,
     compare: Option<&Path>,
     project: Option<&Path>,
+    security: emry_web::WebSecurity,
 ) -> Result<(), Box<dyn Error>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let scheme = if security.tls.is_some() {
+        "https"
+    } else {
+        "http"
+    };
 
     // --project serves the static multi-run overlay instead of a live run.
     if let Some(dir) = project {
         let project = load_project(dir)?;
-        eprintln!("emry web (project) on http://{addr}");
+        eprintln!("emry web (project) on {scheme}://{addr}");
         let runtime = tokio::runtime::Runtime::new()?;
-        runtime.block_on(emry_web::serve_project(addr, project))?;
+        runtime.block_on(emry_web::serve_project(addr, project, security))?;
         return Ok(());
     }
 
@@ -465,13 +506,15 @@ fn cmd_web(
         .iter()
         .map(|(id, name)| (*id, name.as_str()))
         .collect();
-    eprintln!("emry web on http://{addr}");
+    eprintln!("emry web on {scheme}://{addr}");
 
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime.block_on(async move {
         match baseline {
-            Some(baseline) => emry_web::serve_with_baseline(addr, rx, &label_refs, baseline).await,
-            None => emry_web::serve_with_labels(addr, rx, &label_refs).await,
+            Some(baseline) => {
+                emry_web::serve_with_baseline(addr, rx, &label_refs, baseline, security).await
+            }
+            None => emry_web::serve_with_labels(addr, rx, &label_refs, security).await,
         }
     });
 
@@ -1037,13 +1080,19 @@ mod tests {
                 run_dir,
                 socket,
                 port,
+                host,
                 compare,
                 project,
+                auth_token,
+                tls_cert,
+                tls_key,
             } => {
                 assert_eq!(port, 8787);
+                assert_eq!(host, std::net::IpAddr::from([127, 0, 0, 1]));
                 assert!(
                     run_dir.is_none() && socket.is_none() && compare.is_none() && project.is_none()
                 );
+                assert!(auth_token.is_none() && tls_cert.is_none() && tls_key.is_none());
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -1080,9 +1129,69 @@ mod tests {
     }
 
     #[test]
+    fn web_accepts_host_and_security_flags() {
+        match parse(&[
+            "emry",
+            "web",
+            "--socket",
+            "/tmp/e.sock",
+            "--host",
+            "0.0.0.0",
+            "--auth-token",
+            "hunter2",
+            "--tls-cert",
+            "cert.pem",
+            "--tls-key",
+            "key.pem",
+        ])
+        .unwrap()
+        {
+            Commands::Web {
+                host,
+                auth_token,
+                tls_cert,
+                tls_key,
+                ..
+            } => {
+                assert_eq!(host, std::net::IpAddr::from([0, 0, 0, 0]));
+                assert_eq!(auth_token.as_deref(), Some("hunter2"));
+                assert_eq!(tls_cert, Some(PathBuf::from("cert.pem")));
+                assert_eq!(tls_key, Some(PathBuf::from("key.pem")));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // --tls-cert without --tls-key is rejected (clap `requires`).
+        assert!(parse(&["emry", "web", "--tls-cert", "cert.pem"]).is_err());
+    }
+
+    #[test]
+    fn web_security_pairs_tls_and_honors_env_fallback() {
+        // Explicit token + paired TLS.
+        let sec = web_security(
+            Some("tok".into()),
+            Some(PathBuf::from("c.pem")),
+            Some(PathBuf::from("k.pem")),
+        );
+        assert_eq!(sec.token.as_deref(), Some("tok"));
+        assert!(sec.tls.is_some());
+        // No token, no TLS ⇒ fully open (empty string is treated as unset).
+        let sec = web_security(Some(String::new()), None, None);
+        assert!(sec.token.is_none() && sec.tls.is_none());
+    }
+
+    #[test]
     fn web_with_no_target_errors() {
         // Pure validation path (no runtime started): all targets absent errors.
-        assert!(cmd_web(None, None, 8787, None, None).is_err());
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8787));
+        assert!(cmd_web(
+            None,
+            None,
+            addr,
+            None,
+            None,
+            emry_web::WebSecurity::default()
+        )
+        .is_err());
     }
 
     #[test]
