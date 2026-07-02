@@ -69,7 +69,14 @@ pub async fn serve_project(
     project: Project,
     security: crate::security::WebSecurity,
 ) -> std::io::Result<()> {
-    crate::security::serve_router(addr, app_project(Arc::new(project)), security).await
+    // The multi-run project overlay exposes every run, so it requires admin.
+    crate::security::serve_router(
+        addr,
+        app_project(Arc::new(project)),
+        security,
+        crate::security::Role::Admin,
+    )
+    .await
 }
 
 #[cfg(test)]
