@@ -809,7 +809,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "emry-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -824,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "emry-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "crossbeam-channel",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "emry-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "crossbeam-channel",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "emry-ingest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "emry-core",
  "rmp-serde",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "emry-py"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "emry-core",
  "emry-engine",
@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "emry-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "emry-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "emry-core",
@@ -898,7 +898,7 @@ dependencies = [
 
 [[package]]
 name = "emry-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "axum-server",
