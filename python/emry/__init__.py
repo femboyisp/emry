@@ -5,6 +5,6 @@ from emry.mode import DeployMode
 from emry.phase import Phase
 from emry.run import Run, run
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["DeployMode", "Phase", "Run", "run", "to_wandb", "__version__"]

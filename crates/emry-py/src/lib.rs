@@ -164,6 +164,7 @@ mod tests {
 
     #[test]
     fn version_matches_cargo_package() {
-        assert_eq!(emry_version(), "0.1.0");
+        // Tracks the crate version automatically, so a release bump needs no edit.
+        assert_eq!(emry_version(), env!("CARGO_PKG_VERSION"));
     }
 }
