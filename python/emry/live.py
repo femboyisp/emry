@@ -58,10 +58,16 @@ def observer_command(
     """
     if kind not in ("tui", "web"):
         return None
+    # Prefer the binary bundled in the wheel (so it works even when the venv's
+    # bin/ isn't on PATH); fall back to `emry` on PATH for source installs.
+    from emry._cli import binary_path
+
+    binary = binary_path()
+    exe = str(binary) if binary is not None else "emry"
     if socket_path:
-        return ["emry", kind, "--socket", socket_path]
+        return [exe, kind, "--socket", socket_path]
     if run_dir is not None:
-        return ["emry", kind, "--run-dir", str(run_dir)]
+        return [exe, kind, "--run-dir", str(run_dir)]
     return None
 
 

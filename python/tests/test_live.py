@@ -7,6 +7,20 @@ import pytest
 from emry import live, run
 
 
+@pytest.fixture(autouse=True)
+def _no_bundled_binary(monkeypatch):
+    """Default the observer resolver to the PATH `emry` (no wheel-bundled binary),
+    so tests are deterministic whether or not `emry/_bin/` is staged locally."""
+    monkeypatch.setattr("emry._cli.binary_path", lambda: None)
+
+
+def test_observer_command_prefers_bundled_binary(monkeypatch):
+    # When the wheel bundles the binary, its absolute path is used (not PATH).
+    monkeypatch.setattr("emry._cli.binary_path", lambda: Path("/opt/emry/_bin/emry"))
+    cmd = live.observer_command("tui", run_dir=Path("/logs/r"), socket_path=None)
+    assert cmd == ["/opt/emry/_bin/emry", "tui", "--run-dir", "/logs/r"]
+
+
 @pytest.mark.parametrize(
     "value,ssh,tty,force,expected",
     [

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "emry"
-version = "0.2.0"
+version = "0.2.1"
 description = "Gentle observability for long training runs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,11 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+# The `emry` command is a thin Python shim (emry._cli) that execs the compiled
+# Rust CLI bundled in the wheel under emry/_bin/.
+[project.scripts]
+emry = "emry._cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -66,4 +71,7 @@ python-source = "python"
 features = ["extension-module"]
 # Bundle the license into the sdist so it sits at the path maturin records in
 # the metadata's `License-File: LICENSE` (PyPI rejects the upload otherwise).
-include = ["LICENSE"]
+# The `emry` CLI binary is compiled into python/emry/_bin/ before the wheel
+# build (see the release workflow / scripts/build-cli.sh) and bundled — wheel
+# only, since the sdist rebuilds it from the Rust sources.
+include = ["LICENSE", { path = "python/emry/_bin/emry*", format = "wheel" }]

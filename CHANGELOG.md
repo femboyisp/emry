@@ -4,6 +4,22 @@ All notable changes to Emry are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and Emry adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-07-19
+
+### Fixed
+
+- **`pip install emry` now ships the `emry` CLI.** The 0.2.0 wheel contained only
+  the Python SDK + native extension, so the documented `emry watch/web/compare/
+  export` commands weren't runnable and the SDK's live dashboard (which launches
+  `emry`) silently degraded. The compiled CLI is now bundled in the wheel and
+  exposed as the `emry` console script (and `python -m emry`). The SDK also
+  resolves the bundled binary directly, so the live dashboard works even when the
+  interpreter's `bin/` isn't on `PATH`.
+
+### Added
+
+- `emry.run(name=...)` is accepted as an alias for the positional run name.
+
 ## [0.2.0] - 2026-07-07
 
 A big batch of backward-compatible features. Upgrading from 0.1.0 requires no
@@ -48,5 +64,6 @@ code changes — everything below is additive, and existing defaults are unchang
 - Minimum supported Rust version raised to 1.88 (ratatui 0.30); this affects
   building from source only, not installing the wheel.
 
+[0.2.1]: https://github.com/femboyisp/emry/releases/tag/v0.2.1
 [0.2.0]: https://github.com/femboyisp/emry/releases/tag/v0.2.0
 [0.1.0]: https://github.com/femboyisp/emry/releases/tag/v0.1.0

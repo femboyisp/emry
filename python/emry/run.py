@@ -196,8 +196,9 @@ def _resolve_gpu(gpu: object) -> "Optional[GpuSampler]":
 
 
 def run(
-    project: str,
+    project: Optional[str] = None,
     *,
+    name: Optional[str] = None,
     config: Optional[Mapping[str, Any]] = None,
     metrics: Optional[Iterable[str]] = None,
     live: str = "auto",  # noqa: ARG001 — observer spawning is EMRY-035
@@ -218,8 +219,13 @@ def run(
     when it's available, `True`/`False` force it on/off. `alert_webhook` (or the
     `EMRY_ALERT_WEBHOOK` env var) POSTs a Slack-compatible message when a metric
     goes non-finite.
+
+    The run name is the first positional argument; `name=` is accepted as an
+    alias (pass exactly one).
     """
     import os
+
+    project = _resolve_run_name(project, name)
 
     if alert_webhook is None:
         alert_webhook = os.environ.get("EMRY_ALERT_WEBHOOK")
@@ -240,6 +246,16 @@ def run(
     return Run(
         project, backend, metrics=metrics, config=config, gpu=gpu, alert_webhook=alert_webhook
     )
+
+
+def _resolve_run_name(project: Optional[str], name: Optional[str]) -> str:
+    """Reconciles the positional `project` and the `name=` alias into one value."""
+    if project is not None and name is not None:
+        raise TypeError("run(): pass the run name positionally or as name=, not both")
+    resolved = project if project is not None else name
+    if resolved is None:
+        raise TypeError("run(): a run name is required (first positional argument, or name=)")
+    return resolved
 
 
 def _spawn_live(live: object, backend: Backend) -> None:

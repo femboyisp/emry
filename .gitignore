@@ -26,3 +26,6 @@ logs/
 
 # Compiled native extension (built locally via maturin)
 python/emry/_native*.so
+
+# Bundled CLI binary (compiled at wheel-build time, not source)
+python/emry/_bin/
