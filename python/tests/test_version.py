@@ -7,4 +7,4 @@ import emry
 
 def test_version_is_string() -> None:
     assert isinstance(emry.__version__, str)
-    assert emry.__version__ == "0.2.0"
+    assert emry.__version__ == "0.2.1"

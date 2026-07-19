@@ -113,17 +113,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build sdist + abi3 wheel
+      - name: Build sdist + abi3 wheel (CLI binary bundled)
         run: |
           pip install "maturin>=1.4,<2"
+          ./scripts/build-cli.sh            # compiles emry -> python/emry/_bin/
           maturin build --release --out dist
           maturin sdist --out dist
 
-      - name: Verify the wheel installs and imports
+      - name: Verify the wheel installs, imports, and ships the CLI
         run: |
           python -m venv /tmp/wheeltest
           /tmp/wheeltest/bin/pip install --no-index --find-links dist emry
           /tmp/wheeltest/bin/python -c "import emry, emry._native; print(emry.__version__)"
+          # The `emry` console script must be present and runnable from the wheel.
+          /tmp/wheeltest/bin/emry --version
+          /tmp/wheeltest/bin/python -m emry runs --help >/dev/null
 
       - uses: actions/upload-artifact@v4
         with:

@@ -24,13 +24,19 @@ jobs:
 
       # maturin-action builds inside a manylinux container so the abi3 wheel is
       # PyPI-acceptable (a bare `maturin build` would emit a linux_x86_64 wheel
-      # that PyPI rejects).
-      - name: Build wheel
+      # that PyPI rejects). before-script-linux runs IN the container so the
+      # bundled `emry` binary links against the same (old) glibc as the wheel.
+      # manylinux_2_28 has a modern-enough toolchain to build rustls/aws-lc-rs
+      # (emry-cli -> emry-web); cmake + perl are needed for the aws-lc build.
+      - name: Build wheel (CLI binary bundled)
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           args: --release --out dist
-          manylinux: auto
+          manylinux: "2_28"
+          before-script-linux: |
+            dnf install -y cmake perl || yum install -y cmake perl
+            bash scripts/build-cli.sh
 
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
