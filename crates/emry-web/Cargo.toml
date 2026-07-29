@@ -17,7 +17,7 @@ axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 form_urlencoded = "1"
 
 [dev-dependencies]
