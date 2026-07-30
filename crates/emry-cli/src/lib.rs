@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use crossbeam_channel::{bounded, Receiver};
 use emry_core::{Event, MetricId};
 use emry_engine::{Engine, RunConfig};
-use emry_ingest::{read_frame, socket, JsonlTailer};
+use emry_ingest::{read_frame, socket, EventLogTailer, JsonlTailer};
 use emry_store::JsonlSink;
 use emry_tui::{run_terminal, UiState};
 use std::error::Error;
@@ -370,14 +370,25 @@ fn spawn_run_dir_tailer(path: &Path) -> Result<RunDirTailer, Box<dyn Error>> {
     } else {
         path.to_path_buf()
     };
+    // events.jsonl sits beside metrics.jsonl; tailing it surfaces checkpoints,
+    // phase/stage changes and alerts that metrics.jsonl doesn't carry.
+    let events_path = metrics
+        .parent()
+        .map(|dir| dir.join(emry_store::EVENTS_FILE));
 
     // Initial poll: replay existing rows and learn metric names for labels.
     let mut tailer = JsonlTailer::new(&metrics);
     let initial = tailer.poll()?;
     let labels = tailer.labels();
+    let mut events_tailer = events_path.map(EventLogTailer::new);
+    let initial_events = events_tailer
+        .as_mut()
+        .map(|t| t.poll().unwrap_or_default())
+        .unwrap_or_default();
 
     let (tx, rx) = bounded::<Event>(8192);
-    for event in initial {
+    // Replay metric rows first, then the event log, so checkpoints/labels land.
+    for event in initial.into_iter().chain(initial_events) {
         let _ = tx.try_send(event);
     }
     let stop = Arc::new(AtomicBool::new(false));
@@ -385,7 +396,13 @@ fn spawn_run_dir_tailer(path: &Path) -> Result<RunDirTailer, Box<dyn Error>> {
         let stop = Arc::clone(&stop);
         std::thread::spawn(move || {
             while !stop.load(Ordering::Acquire) {
-                for event in tailer.poll().unwrap_or_default() {
+                let events = tailer.poll().unwrap_or_default().into_iter().chain(
+                    events_tailer
+                        .as_mut()
+                        .map(|t| t.poll().unwrap_or_default())
+                        .unwrap_or_default(),
+                );
+                for event in events {
                     if tx.try_send(event).is_err() {
                         // Full: drop and continue. Disconnected: receiver gone —
                         // the loop ends on the next stop check anyway.
