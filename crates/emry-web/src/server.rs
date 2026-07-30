@@ -87,7 +87,8 @@ async fn ws_loop(mut socket: WebSocket, state: SharedState) {
     loop {
         ticker.tick().await;
         let snapshot = snapshot_json(&state);
-        if socket.send(Message::Text(snapshot)).await.is_err() {
+        // axum 0.8: Message::Text carries Utf8Bytes (String: Into<Utf8Bytes>).
+        if socket.send(Message::Text(snapshot.into())).await.is_err() {
             break; // client disconnected
         }
     }
