@@ -1,10 +1,11 @@
 //! Benchmark: JSONL metric-row write + flush throughput.
 #![allow(missing_docs)] // criterion_group! generates an undocumented fn
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use emry_core::{MetricRecord, Phase};
 use emry_store::JsonlWriter;
 use std::collections::BTreeMap;
+use std::hint::black_box;
 
 fn record() -> MetricRecord {
     let mut values = BTreeMap::new();

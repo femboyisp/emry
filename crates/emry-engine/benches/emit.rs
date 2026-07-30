@@ -14,8 +14,9 @@
 //! never blocks the training thread regardless (full ring drops + counts).
 #![allow(missing_docs)] // criterion_group! generates an undocumented fn
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use emry_engine::{Engine, RunConfig};
+use std::hint::black_box;
 
 fn registered_emit(c: &mut Criterion) {
     let dir = std::env::temp_dir().join("emry-bench-emit");

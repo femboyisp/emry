@@ -1,8 +1,9 @@
 //! Benchmark: lock-free ring push/pop on the hot path.
 #![allow(missing_docs)] // criterion_group! generates an undocumented fn
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use emry_core::{event_ring_with_capacity, Event, MetricId, Phase};
+use std::hint::black_box;
 
 fn metric(step: u64) -> Event {
     Event::Metric {

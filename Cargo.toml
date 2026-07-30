@@ -33,7 +33,7 @@ clap = { version = "4", features = ["derive"] }
 ratatui = "0.30"
 axum = { version = "0.8", features = ["ws"] }
 pyo3 = { version = "0.29", features = ["abi3-py310"] }
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
