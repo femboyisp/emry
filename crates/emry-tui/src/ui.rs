@@ -311,6 +311,37 @@ fn render_cards(frame: &mut Frame, area: Rect, state: &UiState) {
     );
 }
 
+/// Chooses the chart y-scale and filters the baseline to it.
+///
+/// The scale is the **live** curve's own range (falling back to `0..1` when the
+/// live curve is empty), so the current run is always readable regardless of how
+/// large the comparison baseline's range is. Baseline points outside the live
+/// range are dropped (hidden) rather than clamped to the border.
+///
+/// Returns the `(min, max)` scale, the in-range baseline (`None` if the metric
+/// has no baseline *or* none of its points fall in range), and whether a
+/// baseline existed but was entirely off-scale (so the title can say so).
+type Baseline = (Vec<u64>, Vec<f64>);
+fn chart_yscale(history: &[f64], base: Option<Baseline>) -> ((f64, f64), Option<Baseline>, bool) {
+    let (g_min, g_max) = value_range(history).unwrap_or((0.0, 1.0));
+    let Some((bs, bv)) = base else {
+        return ((g_min, g_max), None, false);
+    };
+    let (mut fs, mut fv) = (Vec::new(), Vec::new());
+    for (&st, &v) in bs.iter().zip(&bv) {
+        if v.is_finite() && v >= g_min && v <= g_max {
+            fs.push(st);
+            fv.push(v);
+        }
+    }
+    let had_baseline = !bv.is_empty();
+    if fv.is_empty() {
+        ((g_min, g_max), None, had_baseline)
+    } else {
+        ((g_min, g_max), Some((fs, fv)), false)
+    }
+}
+
 fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     let Some(metric) = state.metrics.get(state.selected) else {
         frame.render_widget(block("Chart"), area);
@@ -341,24 +372,24 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
             (bs, bv)
         });
 
-    // Share one y-scale across the live curve and the baseline so they compare.
-    let (mut g_min, mut g_max) = value_range(&history).unwrap_or((0.0, 1.0));
-    if let Some((_, bv)) = &base {
-        if let Some((bmin, bmax)) = value_range(bv) {
-            g_min = g_min.min(bmin);
-            g_max = g_max.max(bmax);
-        }
-    }
+    // Scale the y-axis to the LIVE curve only, and keep the baseline only where
+    // it overlaps that range — a wide-range baseline must not crush the run.
+    let ((g_min, g_max), base_in_range, base_off_scale) = chart_yscale(&history, base);
 
     let live =
         render_braille_steps_scaled(&history, &steps, inner_w, inner_h, s0, s1, g_min, g_max);
-    let base_chart = base.as_ref().map(|(bs, bv)| {
+    let base_chart = base_in_range.as_ref().map(|(bs, bv)| {
         render_braille_steps_scaled(bv, bs, inner_w, inner_h, s0, s1, g_min, g_max)
     });
 
     let title = if base_chart.is_some() {
         format!(
             "{} (latest {:.4})  ·  ╌ baseline",
+            metric.label, metric.latest
+        )
+    } else if base_off_scale {
+        format!(
+            "{} (latest {:.4})  ·  baseline off-scale",
             metric.label, metric.latest
         )
     } else {
@@ -748,12 +779,12 @@ mod tests {
         for step in 0..40u64 {
             s.apply(&batch(step, &[(0, 1.0 / (step as f64 + 1.0))]));
         }
-        // A baseline that sits well above the live curve so it occupies its own
-        // cells (not hidden behind the live line).
+        // A baseline within the live curve's y-range (live is ~0.025..1.0), so
+        // it renders on the shared live scale in its own amber cells.
         s.set_baseline(vec![BaselineSeries {
             label: "loss".into(),
             steps: (0..40).collect(),
-            values: (0..40).map(|i| 2.0 - f64::from(i) * 0.01).collect(),
+            values: (0..40).map(|i| 0.8 - f64::from(i) * 0.01).collect(),
         }]);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -766,6 +797,29 @@ mod tests {
             buffer.content().iter().any(|c| c.fg == AMBER),
             "baseline rendered in amber"
         );
+    }
+
+    #[test]
+    fn chart_yscale_uses_live_range_and_hides_off_scale_baseline() {
+        // Real-world shape: live loss 0.6..2.0, baseline loss all far above.
+        let live = vec![2.0, 1.5, 1.0, 0.8, 0.6];
+        let base = (vec![0, 1, 2, 3, 4], vec![5.5, 4.0, 3.0, 2.5, 2.2]);
+        let ((lo, hi), filtered, off_scale) = chart_yscale(&live, Some(base));
+        assert_eq!((lo, hi), (0.6, 2.0)); // scale = live range, NOT union up to 5.5
+        assert!(filtered.is_none()); // baseline entirely above range -> hidden
+        assert!(off_scale);
+    }
+
+    #[test]
+    fn chart_yscale_keeps_in_range_baseline_points() {
+        let live = vec![2.0, 1.0, 0.6];
+        let base = (vec![0, 1, 2], vec![1.8, 1.2, 5.0]); // 5.0 is off-scale
+        let ((lo, hi), filtered, off_scale) = chart_yscale(&live, Some(base));
+        assert_eq!((lo, hi), (0.6, 2.0));
+        let (fs, fv) = filtered.expect("in-range baseline points survive");
+        assert_eq!(fv, vec![1.8, 1.2]); // 5.0 dropped
+        assert_eq!(fs, vec![0, 1]);
+        assert!(!off_scale);
     }
 
     #[test]
