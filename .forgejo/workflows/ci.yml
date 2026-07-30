@@ -61,6 +61,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
+          # `token:` is REQUIRED on Forgejo. setup-* downloads toolchains from GitHub's release
+          # assets and authenticates with GITHUB_TOKEN, which here is a FORGEJO token — github.com
+          # rejects it with `HttpClientError: Bad credentials`, and the job dies with
+          # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
+          # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
+          token: ${{ secrets.GH_COM_TOKEN }}
           python-version: ${{ matrix.python-version }}
 
       - name: Install (builds the native extension via maturin)
@@ -86,6 +92,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
+          # `token:` is REQUIRED on Forgejo. setup-* downloads toolchains from GitHub's release
+          # assets and authenticates with GITHUB_TOKEN, which here is a FORGEJO token — github.com
+          # rejects it with `HttpClientError: Bad credentials`, and the job dies with
+          # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
+          # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
+          token: ${{ secrets.GH_COM_TOKEN }}
           python-version: "3.12"
 
       - name: Install package + CPU PyTorch
@@ -111,6 +123,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
+          # `token:` is REQUIRED on Forgejo. setup-* downloads toolchains from GitHub's release
+          # assets and authenticates with GITHUB_TOKEN, which here is a FORGEJO token — github.com
+          # rejects it with `HttpClientError: Bad credentials`, and the job dies with
+          # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
+          # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
+          token: ${{ secrets.GH_COM_TOKEN }}
           python-version: "3.12"
 
       - name: Build sdist + abi3 wheel (CLI binary bundled)
@@ -153,6 +171,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
+          # `token:` is REQUIRED on Forgejo. setup-* downloads toolchains from GitHub's release
+          # assets and authenticates with GITHUB_TOKEN, which here is a FORGEJO token — github.com
+          # rejects it with `HttpClientError: Bad credentials`, and the job dies with
+          # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
+          # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
+          token: ${{ secrets.GH_COM_TOKEN }}
           python-version: "3.12"
 
       - name: Run pre-commit
