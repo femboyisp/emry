@@ -201,6 +201,28 @@ pub fn ema_smooth(values: &[f64], span: usize) -> Vec<f64> {
     out
 }
 
+/// Linear interpolation of the value at step `st` over ascending `pts`
+/// (step, value), clamped to the endpoints outside the point range.
+#[allow(clippy::cast_precision_loss)]
+fn interp_at(pts: &[(u64, f64)], st: u64) -> f64 {
+    let (first_s, first_v) = pts[0];
+    let (last_s, last_v) = pts[pts.len() - 1];
+    if st <= first_s {
+        return first_v;
+    }
+    if st >= last_s {
+        return last_v;
+    }
+    let i = pts.partition_point(|&(s, _)| s <= st); // first index with s > st
+    let (s_hi, v_hi) = pts[i];
+    let (s_lo, v_lo) = pts[i - 1];
+    if s_hi == s_lo {
+        return v_hi;
+    }
+    let f = (st - s_lo) as f64 / (s_hi - s_lo) as f64;
+    v_lo + (v_hi - v_lo) * f
+}
+
 /// Renders `values` (with their parallel `steps`, ascending) as a step-based
 /// braille band chart, auto-scaling the y-axis to the data. See
 /// [`render_braille_steps_scaled`] for the shared-scale variant used to overlay
@@ -268,31 +290,15 @@ pub fn render_braille_steps_scaled(
     let dot_w = width * 2;
     let dot_h = height * 4;
 
-    // Accumulate (min, max) per dot column, keyed by each point's step.
-    let mut cols: Vec<Option<(f64, f64)>> = vec![None; dot_w];
-    for (&v, &st) in values.iter().zip(steps) {
-        if !v.is_finite() || st < s0 || st > s1 {
-            continue;
-        }
-        let frac = (st.saturating_sub(s0) as f64) / step_span;
-        let col = (frac * (dot_w - 1) as f64)
-            .round()
-            .clamp(0.0, (dot_w - 1) as f64) as usize;
-        if let Some(slot) = cols.get_mut(col) {
-            *slot = Some(match *slot {
-                Some((lo, hi)) => (lo.min(v), hi.max(v)),
-                None => (v, v),
-            });
-        }
-    }
-    // Carry the last seen column forward across gaps so the line is continuous.
-    let mut last: Option<(f64, f64)> = None;
-    for slot in &mut cols {
-        if slot.is_none() {
-            *slot = last;
-        } else {
-            last = *slot;
-        }
+    // Finite (step, value) points inside the window, ascending by step.
+    let pts: Vec<(u64, f64)> = steps
+        .iter()
+        .zip(values)
+        .filter(|(&st, &v)| v.is_finite() && st >= s0 && st <= s1)
+        .map(|(&st, &v)| (st, v))
+        .collect();
+    if pts.is_empty() {
+        return blank();
     }
 
     let span = if (g_max - g_min).abs() < f64::EPSILON {
@@ -301,17 +307,29 @@ pub fn render_braille_steps_scaled(
         g_max - g_min
     };
     let top_dot = (dot_h - 1) as f64;
+    let to_row = |v: f64| (((v - g_min) / span) * top_dot).round().clamp(0.0, top_dot) as usize;
 
+    // Draw a *connected* polyline: interpolate the series at each dot column's
+    // step, then bridge each column's row to the previous column's. A bare
+    // scatter of points reads as noise at tall panel heights; joining them into
+    // a line reads as a curve.
     let mut cells = vec![vec![0u8; width]; height];
-    for (dot_col, slot) in cols.iter().enumerate() {
-        let Some((min, max)) = *slot else { continue };
+    let mut prev_row: Option<usize> = None;
+    for dot_col in 0..dot_w {
+        let st = if dot_w == 1 {
+            s0
+        } else {
+            s0 + ((dot_col as f64 / (dot_w - 1) as f64) * step_span).round() as u64
+        };
+        let y = to_row(interp_at(&pts, st));
+        let (lo, hi) = prev_row.map_or((y, y), |p| (p.min(y), p.max(y)));
         let cell_col = dot_col / 2;
         let sub_col = dot_col % 2;
-        let to_row = |v: f64| (((v - g_min) / span) * top_dot).round().clamp(0.0, top_dot) as usize;
-        for y in to_row(min)..=to_row(max) {
-            let from_top = (dot_h - 1) - y;
+        for yy in lo..=hi {
+            let from_top = (dot_h - 1) - yy;
             cells[from_top / 4][cell_col] |= dot_bit(sub_col, from_top % 4);
         }
+        prev_row = Some(y);
     }
 
     let rows = cells
