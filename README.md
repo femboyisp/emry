@@ -2,7 +2,7 @@
 
 **Gentle observability for long training runs.**
 
-[![CI](https://github.com/femboyisp/emry/actions/workflows/ci.yml/badge.svg)](https://github.com/femboyisp/emry/actions/workflows/ci.yml)
+[![CI](https://virus.ad/femboy/emry/badges/workflows/ci.yml/badge.svg)](https://virus.ad/femboy/emry/actions)
 [![PyPI](https://img.shields.io/pypi/v/emry.svg)](https://pypi.org/project/emry/)
 [![Python](https://img.shields.io/pypi/pyversions/emry.svg)](https://pypi.org/project/emry/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
