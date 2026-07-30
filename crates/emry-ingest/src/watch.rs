@@ -143,6 +143,77 @@ impl JsonlTailer {
     }
 }
 
+/// Tails a run's `events.jsonl`, parsing each appended line as an [`Event`].
+///
+/// The metric [`JsonlTailer`] only reads `metrics.jsonl`, so in file mode the
+/// dashboard never saw non-metric events (checkpoints, phase/stage changes,
+/// alerts, metric-name tables). This tailer surfaces them with the same
+/// offset-polling robustness. Unparseable lines are skipped and counted.
+#[derive(Debug)]
+pub struct EventLogTailer {
+    path: PathBuf,
+    offset: u64,
+    skipped: u64,
+}
+
+impl EventLogTailer {
+    /// Creates a tailer for an `events.jsonl` path, starting at the beginning.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            offset: 0,
+            skipped: 0,
+        }
+    }
+
+    /// Reads events appended since the last poll. A missing file yields an empty
+    /// vec so polling can begin before the run writes anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`std::io::Error`] if the file exists but cannot be read.
+    pub fn poll(&mut self) -> std::io::Result<Vec<Event>> {
+        let mut file = match File::open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let len = file.metadata()?.len();
+        if len < self.offset {
+            self.offset = 0; // truncated / rotated: restart from the top
+        }
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let consumed = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        self.offset += consumed as u64;
+
+        let mut events = Vec::new();
+        for line_bytes in bytes[..consumed].split(|&b| b == b'\n') {
+            let Ok(line) = std::str::from_utf8(line_bytes) else {
+                self.skipped += 1;
+                continue;
+            };
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Event>(line) {
+                Ok(event) => events.push(event),
+                Err(_) => self.skipped += 1,
+            }
+        }
+        Ok(events)
+    }
+
+    /// Number of lines skipped because they failed to parse.
+    #[must_use]
+    pub fn skipped(&self) -> u64 {
+        self.skipped
+    }
+}
+
 /// Polls `path` until `stop` is set, passing each non-empty batch of parsed
 /// events to `on_events`. The thin live driver over [`JsonlTailer`].
 ///
@@ -217,6 +288,40 @@ mod tests {
     #[test]
     fn missing_file_polls_empty() {
         let mut t = JsonlTailer::new("/no/such/emry/file.jsonl");
+        assert!(t.poll().unwrap().is_empty());
+    }
+
+    #[test]
+    fn event_log_tailer_parses_checkpoints_incrementally() {
+        let f = TempFile::new();
+        let ckpt = Event::Checkpoint {
+            path: "out/phase1-reasoning/adapters.safetensors".into(),
+            step: 38,
+        };
+        f.append(&format!("{}\n", serde_json::to_string(&ckpt).unwrap()));
+
+        let mut t = EventLogTailer::new(f.path());
+        let events = t.poll().unwrap();
+        assert!(matches!(&events[..], [Event::Checkpoint { step: 38, .. }]));
+
+        // Only newly appended events come back on the next poll; garbage skipped.
+        f.append("not json\n");
+        f.append(&format!(
+            "{}\n",
+            serde_json::to_string(&Event::Checkpoint {
+                path: "out/phase2/adapters.safetensors".into(),
+                step: 81,
+            })
+            .unwrap()
+        ));
+        let events = t.poll().unwrap();
+        assert!(matches!(&events[..], [Event::Checkpoint { step: 81, .. }]));
+        assert_eq!(t.skipped(), 1);
+    }
+
+    #[test]
+    fn event_log_tailer_missing_file_is_empty() {
+        let mut t = EventLogTailer::new("/no/such/emry/events.jsonl");
         assert!(t.poll().unwrap().is_empty());
     }
 

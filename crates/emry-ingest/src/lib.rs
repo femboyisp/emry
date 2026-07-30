@@ -7,7 +7,7 @@ pub mod wire;
 pub mod socket;
 
 pub use emry_core::EmryError;
-pub use watch::{run_watch, JsonlTailer};
+pub use watch::{run_watch, EventLogTailer, JsonlTailer};
 pub use wire::{read_frame, write_frame, MAX_FRAME_BYTES};
 
 #[cfg(test)]
