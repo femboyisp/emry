@@ -3,7 +3,7 @@
 # ---- Builder ---------------------------------------------------------------
 # Pin to the workspace MSRV (see rust-toolchain.toml). The `emry` binary is
 # produced by the `emry-cli` crate.
-FROM rust:1.88-slim AS builder
+FROM rust:1.97-slim AS builder
 
 WORKDIR /src
 

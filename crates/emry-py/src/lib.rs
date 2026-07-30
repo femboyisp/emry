@@ -24,7 +24,7 @@ mod native {
     /// A live run, wrapping the Rust [`RunHandle`].
     ///
     /// `unsendable`: the handle owns the SPSC ring producer and is meant to be
-    /// driven from the single training thread, so PyO3 pins it there (touching
+    /// driven from the single training thread, so `PyO3` pins it there (touching
     /// it from another thread raises rather than racing).
     #[pyclass(name = "RunHandle", unsendable)]
     pub struct PyRunHandle {

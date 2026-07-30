@@ -114,7 +114,7 @@ process — see the [SLURM runbook](docs/emry/slurm.md).
 
 ### Prerequisites
 
-- Rust 1.88+ (`rust-toolchain.toml` pins the toolchain)
+- Rust 1.97+ (`rust-toolchain.toml` pins the toolchain)
 - `llvm-tools-preview` for coverage: `rustup component add llvm-tools-preview`
 - `cargo-llvm-cov`: `cargo install cargo-llvm-cov`
 - Python 3.10+

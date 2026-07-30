@@ -525,8 +525,7 @@ fn step_context(event: &Event) -> Option<(u64, u32, Phase)> {
 fn unix_secs_now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
+        .map_or(0.0, |d| d.as_secs_f64())
 }
 
 /// `"loss"` -> `"Loss"` for alert labels.
