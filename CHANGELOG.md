@@ -4,6 +4,32 @@ All notable changes to Emry are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and Emry adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-07-30
+
+Terminal-dashboard chart overhaul (readable curves for noisy, multi-phase
+runs) plus dependency upgrades. Backward-compatible.
+
+### Added
+
+- **Phase-aware chart.** Curriculum/multi-phase runs (whose phases have very
+  different loss scales) are split at checkpoint boundaries and each segment is
+  autoscaled to its own range, with labeled dividers derived from the checkpoint
+  path (`reasoning │ knowledge │ code │ …`). A healthy multi-phase run no longer
+  looks like it diverges at each transition.
+- **`events.jsonl` surfaced in file mode.** `emry watch --run-dir` now shows
+  checkpoints, phase/stage changes, alerts, and the metric-name table (it
+  previously tailed only `metrics.jsonl`).
+
+### Changed
+
+- **Readable loss curves.** The chart now draws a smoothed (EMA), *connected*
+  polyline scaled to the live run. Noisy per-step loss that used to render as
+  scattered dots now reads as a clean trend line, and a wide-range `--compare`
+  baseline no longer crushes the live curve (off-scale baseline is hidden).
+- Dependencies: **axum 0.8 + axum-server 0.8**; Rust toolchain **1.88 → 1.97**;
+  in-semver lockfile bumps (serde, clap, tokio, crossbeam-channel,
+  http-body-util, uuid, criterion).
+
 ## [0.2.1] - 2026-07-19
 
 ### Fixed
@@ -64,6 +90,7 @@ code changes — everything below is additive, and existing defaults are unchang
 - Minimum supported Rust version raised to 1.88 (ratatui 0.30); this affects
   building from source only, not installing the wheel.
 
+[0.2.2]: https://github.com/femboyisp/emry/releases/tag/v0.2.2
 [0.2.1]: https://github.com/femboyisp/emry/releases/tag/v0.2.1
 [0.2.0]: https://github.com/femboyisp/emry/releases/tag/v0.2.0
 [0.1.0]: https://github.com/femboyisp/emry/releases/tag/v0.1.0
