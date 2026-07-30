@@ -129,7 +129,7 @@ jobs:
           /tmp/wheeltest/bin/emry --version
           /tmp/wheeltest/bin/python -m emry runs --help >/dev/null
 
-      - uses: actions/upload-artifact@v4
+      - uses: forgejo/upload-artifact@v4
         with:
           name: emry-dist
           path: dist/*
