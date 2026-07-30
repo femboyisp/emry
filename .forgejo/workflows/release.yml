@@ -20,6 +20,12 @@ jobs:
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
+          # `token:` is REQUIRED on Forgejo. setup-* downloads toolchains from GitHub's release
+          # assets and authenticates with GITHUB_TOKEN, which here is a FORGEJO token — github.com
+          # rejects it with `HttpClientError: Bad credentials`, and the job dies with
+          # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
+          # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
+          token: ${{ secrets.GH_COM_TOKEN }}
           python-version: "3.12"
 
       # maturin-action builds inside a manylinux container so the abi3 wheel is
