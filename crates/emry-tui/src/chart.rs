@@ -164,6 +164,43 @@ pub fn value_range(values: &[f64]) -> Option<(f64, f64)> {
     min.is_finite().then_some((min, max))
 }
 
+/// EMA smoothing span (in points) adaptive to a series' length: ~8% of the
+/// points, clamped to `[3, 64]`. Short series get light smoothing, long ones
+/// more, so both read as a clean trend rather than raw per-step noise.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn adaptive_ema_span(n: usize) -> usize {
+    ((n as f64) * 0.08).round().clamp(3.0, 64.0) as usize
+}
+
+/// Exponential moving average over `values` with `span` (`alpha = 2/(span+1)`).
+///
+/// Returns a vec the same length as `values` (empty in → empty out). Non-finite
+/// values carry the previous smoothed value forward, so a single NaN/Inf can't
+/// wreck the line; leading non-finite entries stay non-finite (drawn blank).
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn ema_smooth(values: &[f64], span: usize) -> Vec<f64> {
+    let alpha = 2.0 / (span.max(1) as f64 + 1.0);
+    let mut out = Vec::with_capacity(values.len());
+    let mut acc = f64::NAN;
+    for &v in values {
+        if v.is_finite() {
+            acc = if acc.is_finite() {
+                alpha * v + (1.0 - alpha) * acc
+            } else {
+                v
+            };
+        }
+        out.push(acc);
+    }
+    out
+}
+
 /// Renders `values` (with their parallel `steps`, ascending) as a step-based
 /// braille band chart, auto-scaling the y-axis to the data. See
 /// [`render_braille_steps_scaled`] for the shared-scale variant used to overlay
@@ -292,6 +329,37 @@ pub fn render_braille_steps_scaled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ema_smooth_reduces_step_to_step_variance() {
+        // A series oscillating across its full range (like real per-step loss).
+        let noisy = vec![1.0, 2.0, 0.5, 1.8, 0.6, 1.9, 0.7, 1.7];
+        let sm = ema_smooth(&noisy, 5);
+        assert_eq!(sm.len(), noisy.len());
+        let total_var = |xs: &[f64]| xs.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>();
+        assert!(
+            total_var(&sm) < total_var(&noisy),
+            "smoothed line jitters less than the raw"
+        );
+    }
+
+    #[test]
+    fn ema_smooth_handles_empty_and_nonfinite() {
+        assert!(ema_smooth(&[], 5).is_empty());
+        let sm = ema_smooth(&[f64::NAN, 1.0, f64::INFINITY, 2.0], 3);
+        assert!(sm[0].is_nan(), "leading non-finite stays blank");
+        assert!(sm[1].is_finite(), "first finite seeds the average");
+        assert!(sm[2].is_finite(), "Inf is carried over, not propagated");
+        assert!(sm[3].is_finite());
+    }
+
+    #[test]
+    fn adaptive_ema_span_scales_and_clamps() {
+        assert_eq!(adaptive_ema_span(0), 3); // clamp low
+        assert_eq!(adaptive_ema_span(10), 3); // 0.8 -> clamp 3
+        assert_eq!(adaptive_ema_span(500), 40); // ~8%
+        assert_eq!(adaptive_ema_span(100_000), 64); // clamp high
+    }
 
     #[test]
     fn downsample_empty_or_zero_buckets_is_empty() {

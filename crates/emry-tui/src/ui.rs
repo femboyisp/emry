@@ -9,7 +9,10 @@
 //! Derived series (EMA, throughput, ETA) are not shown yet — wiring the
 //! processors' `DerivedMetric`s into this state is EMRY-022.
 
-use crate::chart::{render_braille_steps_scaled, value_range, StepChart, BRAILLE_BLANK};
+use crate::chart::{
+    adaptive_ema_span, ema_smooth, render_braille_steps_scaled, value_range, StepChart,
+    BRAILLE_BLANK,
+};
 use emry_core::{AlertRecord, Event, MetricId, Phase, Severity};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -351,12 +354,16 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner_h = area.height.saturating_sub(2) as usize;
 
-    let history: Vec<f64> = metric.history.iter().copied().collect();
     let steps: Vec<u64> = metric.steps.iter().copied().collect();
+    // Per-step metrics (loss especially) are noisy enough that the raw curve
+    // renders as unreadable confetti; smooth it into an EMA trend line.
+    let raw: Vec<f64> = metric.history.iter().copied().collect();
+    let history = ema_smooth(&raw, adaptive_ema_span(raw.len()));
     let s0 = steps.first().copied().unwrap_or(0);
     let s1 = steps.last().copied().unwrap_or(0);
 
-    // The baseline series matching this metric, clipped to the live step window.
+    // The baseline series matching this metric, clipped to the live step window
+    // and smoothed the same way so the comparison is like-for-like.
     let base = state
         .baseline
         .iter()
@@ -369,6 +376,7 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
                     bv.push(v);
                 }
             }
+            let bv = ema_smooth(&bv, adaptive_ema_span(bv.len()));
             (bs, bv)
         });
 
