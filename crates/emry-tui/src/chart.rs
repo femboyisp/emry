@@ -344,9 +344,163 @@ pub fn render_braille_steps_scaled(
     StepChart { rows, col_steps }
 }
 
+/// One x-axis segment with its own y-scale, for the phase-aware chart. Steps in
+/// `[start, end]` are scaled against this segment's `[min, max]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+    /// First step of the segment (inclusive).
+    pub start: u64,
+    /// Last step of the segment (inclusive).
+    pub end: u64,
+    /// y-axis minimum for this segment.
+    pub min: f64,
+    /// y-axis maximum for this segment.
+    pub max: f64,
+}
+
+/// Renders a connected polyline where each x-`segment` is scaled to its **own**
+/// y-range, so phases with different loss scales are each readable. The line
+/// breaks at segment boundaries (leaving a visual divider). `segments` must be
+/// non-empty and cover `[s0, s1]` left to right.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::too_many_arguments
+)]
+pub fn render_braille_segments(
+    values: &[f64],
+    steps: &[u64],
+    width: usize,
+    height: usize,
+    s0: u64,
+    s1: u64,
+    segments: &[Segment],
+) -> StepChart {
+    let step_span = s1.saturating_sub(s0).max(1) as f64;
+    let col_steps: Vec<u64> = (0..width)
+        .map(|c| {
+            if width <= 1 {
+                s0
+            } else {
+                s0 + ((c as f64 / (width - 1) as f64) * step_span).round() as u64
+            }
+        })
+        .collect();
+    let blank = StepChart {
+        rows: vec![BRAILLE_BLANK.to_string().repeat(width); height],
+        col_steps: col_steps.clone(),
+    };
+    if width == 0 || height == 0 || segments.is_empty() || steps.len() != values.len() {
+        return blank;
+    }
+    let pts: Vec<(u64, f64)> = steps
+        .iter()
+        .zip(values)
+        .filter(|(&st, &v)| v.is_finite() && st >= s0 && st <= s1)
+        .map(|(&st, &v)| (st, v))
+        .collect();
+    if pts.is_empty() {
+        return blank;
+    }
+
+    let dot_w = width * 2;
+    let dot_h = height * 4;
+    let top_dot = (dot_h - 1) as f64;
+    let seg_for = |st: u64| {
+        segments
+            .iter()
+            .position(|s| st >= s.start && st <= s.end)
+            .unwrap_or(segments.len() - 1)
+    };
+
+    let mut cells = vec![vec![0u8; width]; height];
+    let mut prev: Option<(usize, usize)> = None; // (segment index, row)
+    for dot_col in 0..dot_w {
+        let st = if dot_w == 1 {
+            s0
+        } else {
+            s0 + ((dot_col as f64 / (dot_w - 1) as f64) * step_span).round() as u64
+        };
+        let si = seg_for(st);
+        let seg = &segments[si];
+        let span = if (seg.max - seg.min).abs() < f64::EPSILON {
+            1.0
+        } else {
+            seg.max - seg.min
+        };
+        let y = (((interp_at(&pts, st) - seg.min) / span) * top_dot)
+            .round()
+            .clamp(0.0, top_dot) as usize;
+        // Connect within a segment; break (divider gap) across boundaries.
+        let (lo, hi) = match prev {
+            Some((ps, pr)) if ps == si => (pr.min(y), pr.max(y)),
+            _ => (y, y),
+        };
+        let cell_col = dot_col / 2;
+        let sub_col = dot_col % 2;
+        for yy in lo..=hi {
+            let from_top = (dot_h - 1) - yy;
+            cells[from_top / 4][cell_col] |= dot_bit(sub_col, from_top % 4);
+        }
+        prev = Some((si, y));
+    }
+
+    let rows = cells
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|bits| char::from_u32(0x2800 + u32::from(bits)).unwrap_or(' '))
+                .collect()
+        })
+        .collect();
+    StepChart { rows, col_steps }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_braille_segments_renders_and_handles_empty() {
+        let steps: Vec<u64> = (0..10).collect();
+        // Segment A: flat ~1.0; segment B: swings 0..5 — each autoscaled to itself.
+        let values = vec![1.0, 1.1, 1.0, 1.1, 1.0, 0.0, 5.0, 0.0, 5.0, 0.0];
+        let segs = vec![
+            Segment {
+                start: 0,
+                end: 4,
+                min: 1.0,
+                max: 1.1,
+            },
+            Segment {
+                start: 5,
+                end: 9,
+                min: 0.0,
+                max: 5.0,
+            },
+        ];
+        let chart = render_braille_segments(&values, &steps, 40, 8, 0, 9, &segs);
+        assert_eq!(chart.rows.len(), 8);
+        assert_eq!(chart.col_steps.len(), 40);
+        let plotted = |cols: std::ops::Range<usize>| {
+            chart.rows.iter().any(|r| {
+                r.chars()
+                    .skip(cols.start)
+                    .take(cols.len())
+                    .any(|c| c != BRAILLE_BLANK)
+            })
+        };
+        assert!(plotted(0..20), "left segment drew something");
+        assert!(plotted(20..40), "right segment drew something");
+        // No segments -> blank.
+        let blank = render_braille_segments(&values, &steps, 40, 8, 0, 9, &[]);
+        assert!(blank
+            .rows
+            .iter()
+            .all(|r| r.chars().all(|c| c == BRAILLE_BLANK)));
+    }
 
     #[test]
     fn ema_smooth_reduces_step_to_step_variance() {
