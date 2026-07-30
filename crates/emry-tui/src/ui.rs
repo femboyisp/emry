@@ -10,8 +10,8 @@
 //! processors' `DerivedMetric`s into this state is EMRY-022.
 
 use crate::chart::{
-    adaptive_ema_span, ema_smooth, render_braille_steps_scaled, value_range, StepChart,
-    BRAILLE_BLANK,
+    adaptive_ema_span, ema_smooth, render_braille_segments, render_braille_steps_scaled,
+    value_range, Segment, StepChart, BRAILLE_BLANK,
 };
 use emry_core::{AlertRecord, Event, MetricId, Phase, Severity};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -48,6 +48,35 @@ pub struct MetricView {
     /// Step each `history` value was recorded at (parallel to `history`), so the
     /// chart x-axis is step-based for phase bands + checkpoint markers.
     pub steps: VecDeque<u64>,
+}
+
+/// A recorded checkpoint: the step it was taken at and a short label derived
+/// from its path (e.g. `.../phase1-reasoning/adapters.safetensors` → `reasoning`).
+/// Checkpoint steps double as segment boundaries for the phase-aware chart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpoint {
+    /// Step the checkpoint was taken at.
+    pub step: u64,
+    /// Short human label for the segment this checkpoint ends.
+    pub label: String,
+}
+
+/// Derives a short segment label from a checkpoint path: the parent directory
+/// name with a leading `phaseN-`/`phaseN_` stripped, else the file stem.
+#[must_use]
+pub fn checkpoint_label(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let raw = p
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .or_else(|| p.file_stem())
+        .map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
+    // Strip a leading "phase<N>-" / "phase<N>_" ordering prefix if present.
+    raw.split_once(['-', '_'])
+        .filter(|(head, _)| {
+            head.starts_with("phase") && head[5..].chars().all(|c| c.is_ascii_digit())
+        })
+        .map_or(raw.clone(), |(_, rest)| rest.to_string())
 }
 
 /// A phase transition: the run entered `phase` at `step` (for chart shading).
@@ -93,8 +122,8 @@ pub struct UiState {
     pub finished: bool,
     /// Phase transitions in step order (background shading; capped FIFO).
     pub phases: VecDeque<PhaseSpan>,
-    /// Steps at which checkpoints were taken (vertical markers; capped FIFO).
-    pub checkpoints: VecDeque<u64>,
+    /// Checkpoints taken (vertical markers + phase-segment boundaries; capped FIFO).
+    pub checkpoints: VecDeque<Checkpoint>,
     /// Prior-run series overlaid on the chart for comparison (empty if none).
     pub baseline: Vec<BaselineSeries>,
     labels: BTreeMap<u16, String>,
@@ -172,8 +201,11 @@ impl UiState {
                     self.alerts.remove(0);
                 }
             }
-            Event::Checkpoint { step, .. } => {
-                self.checkpoints.push_back(*step);
+            Event::Checkpoint { step, path } => {
+                self.checkpoints.push_back(Checkpoint {
+                    step: *step,
+                    label: checkpoint_label(path),
+                });
                 cap_front(&mut self.checkpoints, self.max_markers);
             }
             Event::MetricsRegistered { names } => {
@@ -345,6 +377,56 @@ fn chart_yscale(history: &[f64], base: Option<Baseline>) -> ((f64, f64), Option<
     }
 }
 
+/// Splits `[s0, s1]` at `bounds` (checkpoint steps, ascending) into per-phase
+/// [`Segment`]s each y-scaled to its own data, with a label per segment (from
+/// the checkpoint that ends it; the trailing live segment is `current`).
+fn build_segments(
+    values: &[f64],
+    steps: &[u64],
+    s0: u64,
+    s1: u64,
+    bounds: &[u64],
+    checkpoints: &VecDeque<Checkpoint>,
+) -> (Vec<Segment>, Vec<String>) {
+    let range_in = |a: u64, b: u64| {
+        let vs: Vec<f64> = steps
+            .iter()
+            .zip(values)
+            .filter(|(&st, _)| st >= a && st <= b)
+            .map(|(_, &v)| v)
+            .collect();
+        value_range(&vs).unwrap_or((0.0, 1.0))
+    };
+    let label_at = |step: u64| {
+        checkpoints
+            .iter()
+            .find(|c| c.step == step)
+            .map_or_else(|| "?".to_string(), |c| c.label.clone())
+    };
+    let (mut segs, mut labels) = (Vec::new(), Vec::new());
+    let mut start = s0;
+    for &b in bounds {
+        let (min, max) = range_in(start, b);
+        segs.push(Segment {
+            start,
+            end: b,
+            min,
+            max,
+        });
+        labels.push(label_at(b));
+        start = b;
+    }
+    let (min, max) = range_in(start, s1);
+    segs.push(Segment {
+        start,
+        end: s1,
+        min,
+        max,
+    });
+    labels.push("current".to_string());
+    (segs, labels)
+}
+
 fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     let Some(metric) = state.metrics.get(state.selected) else {
         frame.render_widget(block("Chart"), area);
@@ -361,6 +443,30 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     let history = ema_smooth(&raw, adaptive_ema_span(raw.len()));
     let s0 = steps.first().copied().unwrap_or(0);
     let s1 = steps.last().copied().unwrap_or(0);
+
+    // Phase-aware: if checkpoints split the window, scale each segment to its
+    // own range so differently-scaled phases each read clearly. (The baseline
+    // overlay can't share per-segment scales, so it's omitted in this mode.)
+    let bounds: Vec<u64> = state
+        .checkpoints
+        .iter()
+        .map(|c| c.step)
+        .filter(|&st| st > s0 && st < s1)
+        .collect();
+    if !bounds.is_empty() {
+        let (segments, labels) =
+            build_segments(&history, &steps, s0, s1, &bounds, &state.checkpoints);
+        let chart = render_braille_segments(&history, &steps, inner_w, inner_h, s0, s1, &segments);
+        let title = format!(
+            "{} (latest {:.4})  ·  {}",
+            metric.label,
+            metric.latest,
+            labels.join(" │ ")
+        );
+        let lines = compose_chart_lines(&chart, None, &state.phases, &state.checkpoints);
+        frame.render_widget(Paragraph::new(lines).block(block(&title)), area);
+        return;
+    }
 
     // The baseline series matching this metric, clipped to the live step window
     // and smoothed the same way so the comparison is like-for-like.
@@ -419,7 +525,7 @@ fn compose_chart_lines<'a>(
     live: &StepChart,
     base: Option<&StepChart>,
     phases: &VecDeque<PhaseSpan>,
-    checkpoints: &VecDeque<u64>,
+    checkpoints: &VecDeque<Checkpoint>,
 ) -> Vec<Line<'a>> {
     if live.rows.is_empty() {
         return Vec::new();
@@ -440,7 +546,7 @@ fn compose_chart_lines<'a>(
     // Columns carrying a checkpoint marker, mapped onto the chart's own step
     // axis (`col_steps`) so they stay aligned with the curve.
     let mut is_ckpt = vec![false; width];
-    for &c in checkpoints {
+    for c in checkpoints.iter().map(|c| c.step) {
         if c < s0 || c > s1 {
             continue;
         }
@@ -728,8 +834,11 @@ mod tests {
                 phase: Phase::Eval
             }]
         );
-        // Checkpoints are recorded (previously dropped).
-        assert_eq!(s.checkpoints.iter().copied().collect::<Vec<_>>(), vec![6]);
+        // Checkpoints are recorded (previously dropped), with a derived label.
+        assert_eq!(
+            s.checkpoints.iter().map(|c| c.step).collect::<Vec<_>>(),
+            vec![6]
+        );
     }
 
     #[test]
@@ -805,6 +914,56 @@ mod tests {
             buffer.content().iter().any(|c| c.fg == AMBER),
             "baseline rendered in amber"
         );
+    }
+
+    #[test]
+    fn checkpoint_label_strips_phase_prefix() {
+        assert_eq!(
+            checkpoint_label("out/phase1-reasoning/adapters.safetensors"),
+            "reasoning"
+        );
+        assert_eq!(checkpoint_label("runs/phase12_code/x.pt"), "code");
+        assert_eq!(checkpoint_label("ckpts/warmup/x.pt"), "warmup"); // no phaseN prefix
+        assert_eq!(checkpoint_label("step_200.pt"), "step_200"); // file stem fallback
+    }
+
+    #[test]
+    fn build_segments_splits_and_labels_by_checkpoint() {
+        let steps: Vec<u64> = (0..=9).collect();
+        let values: Vec<f64> = vec![2.0, 1.8, 1.6, 1.4, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5];
+        let mut ckpts = VecDeque::new();
+        ckpts.push_back(Checkpoint {
+            step: 4,
+            label: "reasoning".into(),
+        });
+        let (segs, labels) = build_segments(&values, &steps, 0, 9, &[4], &ckpts);
+        assert_eq!(segs.len(), 2);
+        assert_eq!((segs[0].start, segs[0].end), (0, 4));
+        assert_eq!((segs[1].start, segs[1].end), (4, 9));
+        // Each segment scaled to its own data range.
+        assert!((segs[0].max - 5.0).abs() < 1e-9); // includes the step-4 spike
+        assert!(segs[1].max <= 5.0 && segs[1].min <= 1.0);
+        assert_eq!(labels, vec!["reasoning".to_string(), "current".to_string()]);
+    }
+
+    #[test]
+    fn segmented_chart_titles_phases_from_checkpoints() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..10u64 {
+            s.apply(&batch(
+                step,
+                &[(0, 2.0 - f64::from(u32::try_from(step).unwrap()) * 0.1)],
+            ));
+        }
+        s.apply(&Event::Checkpoint {
+            path: "out/phase1-reasoning/adapters.safetensors".into(),
+            step: 4,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("reasoning"), "segment label in title");
+        assert!(text.contains("current"), "live segment labeled");
     }
 
     #[test]
