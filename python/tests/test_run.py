@@ -152,7 +152,10 @@ def test_run_factory_uses_injected_backend():
 def test_null_backend_runs_clean():
     with run("p", backend=NullBackend()) as r:
         r.emit(loss=1.0)
+        r.checkpoint("/ckpt/x.pt")  # no-op sink
+        r.stage("reasoning")  # no-op sink
     assert r.step == 1
+    assert r.current_stage == "reasoning"
 
 
 def test_jsonl_backend_writes_wire_compatible_run_dir(tmp_path):
