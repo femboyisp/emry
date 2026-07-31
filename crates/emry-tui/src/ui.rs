@@ -990,6 +990,35 @@ mod tests {
     }
 
     #[test]
+    fn stages_take_precedence_over_checkpoints_as_segments() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..10u64 {
+            s.apply(&batch(
+                step,
+                &[(0, 2.0 - f64::from(u32::try_from(step).unwrap()) * 0.1)],
+            ));
+        }
+        // A checkpoint AND an explicit stage inside the window; the stage wins.
+        s.apply(&Event::Checkpoint {
+            path: "out/phase9-ckpthidden/x.pt".into(),
+            step: 6,
+        });
+        s.apply(&Event::StageChange {
+            name: "reasoning".into(),
+            step: 4,
+        });
+        assert_eq!(s.stages.len(), 1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("reasoning"), "stage label drives the segment");
+        assert!(
+            !text.contains("ckpthidden"),
+            "checkpoint label is not a segment label when a stage is set"
+        );
+    }
+
+    #[test]
     fn chart_yscale_uses_live_range_and_hides_off_scale_baseline() {
         // Real-world shape: live loss 0.6..2.0, baseline loss all far above.
         let live = vec![2.0, 1.5, 1.0, 0.8, 0.6];

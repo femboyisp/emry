@@ -284,6 +284,21 @@ mod tests {
     }
 
     #[test]
+    fn stage_change_is_recorded_and_serialized() {
+        let mut s = WebState::default();
+        s.apply(&batch(0, &[(0, 1.0)]));
+        s.apply(&Event::StageChange {
+            name: "reasoning".into(),
+            step: 0,
+        });
+        assert_eq!(s.stages.len(), 1);
+        assert_eq!(s.stages[0].step, 0);
+        assert_eq!(s.stages[0].label, "reasoning");
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"stages\"") && json.contains("reasoning"));
+    }
+
+    #[test]
     fn checkpoint_label_matches_tui_reference() {
         // Same cases the TUI's checkpoint_label test asserts, so the two copies
         // can't silently drift.
