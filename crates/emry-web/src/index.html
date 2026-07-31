@@ -283,13 +283,20 @@
           const card = document.createElement("div");
           card.className = "card" + (m.label === selected ? " selected" : "");
           card.textContent = `${m.label} = ${Number(m.latest).toPrecision(5)}`;
-          card.onclick = () => {
-            selected = m.label;
-            render();
-          };
+          card.dataset.label = m.label;
           els.cards.appendChild(card);
         }
       }
+
+      // Delegated click: the card list is rebuilt on every 10 Hz snapshot, so a
+      // per-card onclick is destroyed between mousedown and mouseup and the click
+      // never fires. One listener on the stable container survives the rebuilds.
+      els.cards.addEventListener("click", (e) => {
+        const card = e.target.closest(".card");
+        if (!card) return;
+        selected = card.dataset.label;
+        render();
+      });
 
       function render() {
         const s = latestState;
