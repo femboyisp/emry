@@ -310,6 +310,16 @@ impl RunHandle {
         });
     }
 
+    /// Records that the run entered the named curriculum stage at `step` — a
+    /// phase-segment boundary on the dashboards. Never blocks (a full ring
+    /// drops it).
+    pub fn stage_change(&mut self, name: impl Into<String>, step: u64) {
+        let _ = self.producer.push(Event::StageChange {
+            name: name.into(),
+            step,
+        });
+    }
+
     /// Number of events dropped because the ring was full.
     #[must_use]
     pub fn dropped(&self) -> u64 {
@@ -587,6 +597,16 @@ mod tests {
         run.finish().unwrap();
         let events = std::fs::read_to_string(dir.path().join(EVENTS_FILE)).unwrap();
         assert!(events.contains("CHECKPOINT") && events.contains("step_10.pt"));
+    }
+
+    #[test]
+    fn stage_change_is_recorded_in_the_event_log() {
+        let dir = TempDir::new();
+        let mut run = Engine::start(config(dir.path())).unwrap();
+        run.stage_change("reasoning", 5);
+        run.finish().unwrap();
+        let events = std::fs::read_to_string(dir.path().join(EVENTS_FILE)).unwrap();
+        assert!(events.contains("STAGE_CHANGE") && events.contains("reasoning"));
     }
 
     #[test]

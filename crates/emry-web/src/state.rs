@@ -50,6 +50,17 @@ pub struct WebCheckpoint {
     pub label: String,
 }
 
+/// A named curriculum stage the run entered (from `run.stage(...)`). Like
+/// [`WebCheckpoint`], a stage step is a phase-segment boundary, but the label is
+/// the explicit stage name. When present these take precedence over checkpoints.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WebStage {
+    /// Step the stage began at.
+    pub step: u64,
+    /// Explicit stage name (segment label).
+    pub label: String,
+}
+
 /// An alert surfaced to the dashboard.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WebAlert {
@@ -80,6 +91,9 @@ pub struct WebState {
     pub phases: VecDeque<PhaseSpan>,
     /// Checkpoints taken (vertical markers + phase-segment boundaries/labels).
     pub checkpoints: VecDeque<WebCheckpoint>,
+    /// Named curriculum stages (explicit phase-segment boundaries); when
+    /// non-empty these take precedence over checkpoints as chart segments.
+    pub stages: VecDeque<WebStage>,
     #[serde(skip)]
     labels: BTreeMap<u16, String>,
 }
@@ -133,6 +147,13 @@ impl WebState {
                     label: checkpoint_label(path),
                 });
                 cap(&mut self.checkpoints, DEFAULT_MARKERS);
+            }
+            Event::StageChange { name, step } => {
+                self.stages.push_back(WebStage {
+                    step: *step,
+                    label: name.clone(),
+                });
+                cap(&mut self.stages, DEFAULT_MARKERS);
             }
             Event::MetricsRegistered { names } => {
                 for (id, name) in names {

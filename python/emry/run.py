@@ -39,6 +39,9 @@ class Backend(Protocol):
     def checkpoint(self, path: str, step: int) -> None:
         """Records that a checkpoint was written at `path` for `step`."""
 
+    def stage(self, name: str, step: int) -> None:
+        """Records that the run entered the named curriculum stage at `step`."""
+
     def finish(self, *, steps: int, reason: str) -> None:
         """Flushes and closes the run after `steps` emissions.
 
@@ -55,6 +58,9 @@ class NullBackend:
 
     def checkpoint(self, path: str, step: int) -> None:
         """Drops the checkpoint."""
+
+    def stage(self, name: str, step: int) -> None:
+        """Drops the stage change."""
 
     def finish(self, *, steps: int, reason: str) -> None:
         """No-op."""
@@ -80,6 +86,7 @@ class Run:
         self._step = 0
         self._epoch = 0
         self._phase = Phase.TRAIN
+        self._stage: Optional[str] = None
         self._finished = False
         self._gpu = _resolve_gpu(gpu)
         from emry.alerts import resolve as _resolve_notifier
@@ -136,6 +143,30 @@ class Run:
         if self._finished:
             raise RuntimeError("checkpoint() called after the run finished")
         self._backend.checkpoint(path, self._step if step is None else step)
+
+    @property
+    def current_stage(self) -> Optional[str]:
+        """The name of the current curriculum stage, or ``None`` before the
+        first :meth:`stage` call."""
+        return self._stage
+
+    def stage(self, name: str, *, step: Optional[int] = None) -> None:
+        """Marks that the run entered the named curriculum stage — a
+        phase-segment boundary the dashboards split and label the chart on.
+        Defaults to the current step.
+
+        The explicit alternative to encoding stages in checkpoint paths::
+
+            run.stage("reasoning")
+            ...
+            run.stage("knowledge")   # a new chart segment
+
+        Raises ``RuntimeError`` if called after :meth:`finish`.
+        """
+        if self._finished:
+            raise RuntimeError("stage() called after the run finished")
+        self._stage = name
+        self._backend.stage(name, self._step if step is None else step)
 
     def steps(self, total: int) -> Iterator[int]:
         """Yields ``0..total`` as loop sugar; each iteration is one expected emit."""

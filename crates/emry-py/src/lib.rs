@@ -94,6 +94,16 @@ mod native {
             Ok(())
         }
 
+        /// Records that the run entered the named curriculum stage at `step`
+        /// (a phase-segment boundary on the dashboards).
+        fn stage_change(&mut self, name: String, step: u64) -> PyResult<()> {
+            self.inner
+                .as_mut()
+                .ok_or_else(finished_err)?
+                .stage_change(name, step);
+            Ok(())
+        }
+
         /// Sets the current epoch.
         fn set_epoch(&mut self, epoch: u32) -> PyResult<()> {
             self.inner

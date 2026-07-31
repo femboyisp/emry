@@ -32,6 +32,15 @@ def test_native_extension_drives_the_engine(tmp_path):
     assert (tmp_path / "run.meta").exists()
 
 
+def test_native_stage_change_writes_event(tmp_path):
+    native = pytest.importorskip("emry._native")
+    handle = native.RunHandle("stagetest", str(tmp_path), [], None)
+    handle.stage_change("reasoning", 0)
+    handle.finish()
+    events = (tmp_path / "events.jsonl").read_text()
+    assert "STAGE_CHANGE" in events and "reasoning" in events
+
+
 def test_native_set_phase_rejects_unknown(tmp_path):
     native = pytest.importorskip("emry._native")
     handle = native.RunHandle("p", str(tmp_path), [], None)

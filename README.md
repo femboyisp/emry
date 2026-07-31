@@ -60,7 +60,9 @@ with emry.run("llama-sft", config={"lr": 2e-5}, metrics=["loss", "lr"]) as run:
 `run.steps(n)` yields steps and advances Emry's step counter for you; `emit()`
 takes any metrics as keyword arguments. Mark phases with
 `run.phase = emry.Phase.EVAL`, and iterate epochs with `run.epochs(n)` to track
-the epoch automatically. Values are duck-typed — tensors and numpy scalars are
+the epoch automatically. For curriculum/multi-phase runs, call
+`run.stage("reasoning")` to name each stage — the dashboards split and label the
+loss chart at stage boundaries so differently-scaled phases each stay readable. Values are duck-typed — tensors and numpy scalars are
 coerced, so you can pass `loss` directly without `.item()`. When an NVIDIA GPU is
 present, Emry samples `nvidia-smi` automatically and charts GPU utilization,
 memory, and temperature alongside your metrics (`gpu=False` to disable). Pass

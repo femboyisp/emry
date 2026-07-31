@@ -19,6 +19,7 @@ __all__ = [
     "frame",
     "metrics_batch",
     "phase_change",
+    "stage_change",
     "checkpoint",
     "run_finished",
 ]
@@ -62,6 +63,11 @@ def metrics_batch(
 def phase_change(phase: str) -> dict:
     """A ``PhaseChange`` event."""
     return {"type": "PHASE_CHANGE", "data": phase}
+
+
+def stage_change(name: str, step: int) -> dict:
+    """A ``StageChange`` event (a named curriculum-stage boundary)."""
+    return {"type": "STAGE_CHANGE", "data": {"name": name, "step": step}}
 
 
 def checkpoint(path: str, step: int) -> dict:

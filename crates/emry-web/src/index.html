@@ -218,10 +218,16 @@
 
         drawPhaseBands(state, s0, s1, xStep, pad, h);
 
+        // Explicit run.stage() marks take precedence over checkpoint-derived
+        // labels as segment boundaries; both are {step,label}.
         const ckpts = (state && state.checkpoints) || [];
-        const bounds = ckpts.map((c) => c.step).filter((st) => st > s0 && st < s1);
-        return bounds.length
-          ? drawSegmented(data, steps, s0, s1, bounds, ckpts, xStep, pad, w, h)
+        const source = state && state.stages && state.stages.length ? state.stages : ckpts;
+        const marks = source
+          .map((m) => ({ step: m.step, label: m.label }))
+          .filter((m) => m.step > s0 && m.step < s1)
+          .sort((a, b) => a.step - b.step);
+        return marks.length
+          ? drawSegmented(data, steps, s0, s1, marks, xStep, pad, w, h)
           : drawSingle(metric, data, steps, s0, s1, ckpts, xStep, xIdx, pad, w, h);
       }
 
@@ -238,11 +244,11 @@
       // Phase-aware: one connected polyline per checkpoint-delimited segment,
       // each scaled to its own [min,max]. Labels come from the checkpoint that
       // ends each segment; the trailing live segment is "current".
-      function drawSegmented(data, steps, s0, s1, bounds, ckpts, xStep, pad, w, h) {
-        const edges = [s0, ...bounds.slice().sort((a, b) => a - b), s1];
+      function drawSegmented(data, steps, s0, s1, marks, xStep, pad, w, h) {
+        const edges = [s0, ...marks.map((m) => m.step), s1];
         const labelAt = (step) => {
-          const c = ckpts.find((c) => c.step === step);
-          return c ? c.label : "?";
+          const m = marks.find((m) => m.step === step);
+          return m ? m.label : "?";
         };
         const labels = [];
         for (let k = 0; k + 1 < edges.length; k++) {

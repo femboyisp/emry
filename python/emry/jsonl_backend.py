@@ -93,7 +93,15 @@ class JsonlBackend:
     def checkpoint(self, path: str, step: int) -> None:
         """Appends a ``Checkpoint`` event to ``events.jsonl`` (adjacently-tagged,
         matching the Rust schema)."""
-        event = {"type": "CHECKPOINT", "data": {"path": path, "step": step}}
+        self._append_event({"type": "CHECKPOINT", "data": {"path": path, "step": step}})
+
+    def stage(self, name: str, step: int) -> None:
+        """Appends a ``StageChange`` event to ``events.jsonl`` (a named
+        curriculum-stage boundary; adjacently-tagged, matching the Rust schema)."""
+        self._append_event({"type": "STAGE_CHANGE", "data": {"name": name, "step": step}})
+
+    def _append_event(self, event: dict) -> None:
+        """Appends one adjacently-tagged event line to ``events.jsonl``."""
         with (self._run_dir / EVENTS_FILE).open("a", encoding="utf-8") as events:
             events.write(json.dumps(event) + "\n")
 

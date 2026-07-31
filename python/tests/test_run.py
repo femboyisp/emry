@@ -15,6 +15,7 @@ class FakeBackend:
     def __init__(self):
         self.emitted = []  # (step, epoch, phase, values)
         self.checkpoints = []  # (path, step)
+        self.stages = []  # (name, step)
         self.finished_at = None
         self.finish_reason = None
 
@@ -23,6 +24,9 @@ class FakeBackend:
 
     def checkpoint(self, path, step):
         self.checkpoints.append((path, step))
+
+    def stage(self, name, step):
+        self.stages.append((name, step))
 
     def finish(self, *, steps, reason):
         self.finished_at = steps
@@ -44,6 +48,25 @@ def test_checkpoint_after_finish_raises():
     r.finish()
     with pytest.raises(RuntimeError):
         r.checkpoint("/ckpt/late.pt")
+
+
+def test_stage_forwards_with_current_or_explicit_step_and_tracks_name():
+    fake = FakeBackend()
+    r = Run("p", fake)
+    assert r.current_stage is None
+    r.emit(loss=1.0)
+    r.emit(loss=0.9)  # step is now 2
+    r.stage("reasoning")  # defaults to the current step
+    r.stage("knowledge", step=10)
+    assert fake.stages == [("reasoning", 2), ("knowledge", 10)]
+    assert r.current_stage == "knowledge"
+
+
+def test_stage_after_finish_raises():
+    r = Run("p", FakeBackend())
+    r.finish()
+    with pytest.raises(RuntimeError):
+        r.stage("late")
 
 
 def test_emit_coerces_and_forwards_with_advancing_step():
@@ -170,6 +193,23 @@ def test_jsonl_backend_records_checkpoints_in_events_log(tmp_path):
     ]
     assert events == [
         {"type": "CHECKPOINT", "data": {"path": "/ckpt/step_1.pt", "step": 1}}
+    ]
+
+
+def test_jsonl_backend_records_stages_in_events_log(tmp_path):
+    with run("demo", metrics=["loss"], log_dir=str(tmp_path), mode="file") as r:
+        r.stage("reasoning")  # current step (0)
+        r.emit(loss=1.0)
+        r.stage("knowledge")  # current step (1)
+    run_dir = next(tmp_path.iterdir())
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert events == [
+        {"type": "STAGE_CHANGE", "data": {"name": "reasoning", "step": 0}},
+        {"type": "STAGE_CHANGE", "data": {"name": "knowledge", "step": 1}},
     ]
 
 

@@ -139,6 +139,16 @@ pub enum Event {
     },
     /// The run transitioned to a new [`Phase`].
     PhaseChange(Phase),
+    /// The run entered a named curriculum stage (a free-text label, distinct
+    /// from the fixed [`Phase`] enum). Dashboards split and label the metric
+    /// chart at stage boundaries — the explicit alternative to inferring stage
+    /// labels from checkpoint paths.
+    StageChange {
+        /// Human-readable stage name (e.g. `"reasoning"`).
+        name: String,
+        /// Step the stage began at.
+        step: u64,
+    },
     /// A checkpoint was written to disk.
     Checkpoint {
         /// Filesystem path of the checkpoint.
@@ -281,6 +291,10 @@ mod tests {
                 values: vec![(MetricId(0), 0.4), (MetricId(1), 2e-5)],
             },
             Event::PhaseChange(Phase::Eval),
+            Event::StageChange {
+                name: "reasoning".to_string(),
+                step: 150,
+            },
             Event::Checkpoint {
                 path: "/ckpt/step_200.pt".to_string(),
                 step: 200,
@@ -347,6 +361,13 @@ mod tests {
             "METRICS_BATCH"
         );
         assert_eq!(tag(&Event::PhaseChange(Phase::Train)), "PHASE_CHANGE");
+        assert_eq!(
+            tag(&Event::StageChange {
+                name: String::new(),
+                step: 0
+            }),
+            "STAGE_CHANGE"
+        );
         assert_eq!(
             tag(&Event::Checkpoint {
                 path: String::new(),

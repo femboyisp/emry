@@ -4,6 +4,28 @@ All notable changes to Emry are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and Emry adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`run.stage(name)` — explicit curriculum stages.** Call `run.stage("reasoning")`
+  to name each stage of a multi-phase run; the dashboards split and label the
+  chart at stage boundaries (`reasoning │ knowledge │ current`) instead of only
+  inferring labels from checkpoint paths. Backed by a new `StageChange` event
+  that flows through all modes (file, sidecar, embedded). Explicit stages take
+  precedence over checkpoint-derived boundaries when both are present.
+- **Phase-aware web chart (parity with the terminal).** `emry web` now
+  EMA-smooths the loss curve and, for curriculum runs, autoscales each
+  checkpoint/stage segment to its own range with labeled dividers — so a healthy
+  multi-phase run no longer looks like it diverges at each transition.
+
+### Fixed
+
+- **Web dashboard buttons are clickable again.** The metric cards rebuilt on
+  every 10 Hz snapshot, so a click landing across a rebuild never registered
+  (mousedown and mouseup hit different DOM nodes). Clicks are now delegated to
+  the stable container and register regardless of snapshot cadence.
+
 ## [0.2.2] - 2026-07-30
 
 Terminal-dashboard chart overhaul (readable curves for noisy, multi-phase
