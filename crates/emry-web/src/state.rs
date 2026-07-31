@@ -39,6 +39,17 @@ pub struct PhaseSpan {
     pub phase: String,
 }
 
+/// A checkpoint marker: the step it was taken at and a short label derived from
+/// its path, so the phase-aware chart can split the curve at checkpoint
+/// boundaries and label each segment (`.../phase1-reasoning/x.pt` → `reasoning`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WebCheckpoint {
+    /// Step the checkpoint was taken at.
+    pub step: u64,
+    /// Short human label for the segment this checkpoint ends.
+    pub label: String,
+}
+
 /// An alert surfaced to the dashboard.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WebAlert {
@@ -67,8 +78,8 @@ pub struct WebState {
     pub alerts: VecDeque<WebAlert>,
     /// Phase transitions in step order (for background shading).
     pub phases: VecDeque<PhaseSpan>,
-    /// Steps at which checkpoints were taken (for vertical markers).
-    pub checkpoints: VecDeque<u64>,
+    /// Checkpoints taken (vertical markers + phase-segment boundaries/labels).
+    pub checkpoints: VecDeque<WebCheckpoint>,
     #[serde(skip)]
     labels: BTreeMap<u16, String>,
 }
@@ -116,8 +127,11 @@ impl WebState {
                 });
                 cap(&mut self.alerts, DEFAULT_ALERTS);
             }
-            Event::Checkpoint { step, .. } => {
-                self.checkpoints.push_back(*step);
+            Event::Checkpoint { path, step } => {
+                self.checkpoints.push_back(WebCheckpoint {
+                    step: *step,
+                    label: checkpoint_label(path),
+                });
                 cap(&mut self.checkpoints, DEFAULT_MARKERS);
             }
             Event::MetricsRegistered { names } => {
@@ -171,6 +185,24 @@ fn cap<T>(deque: &mut VecDeque<T>, max: usize) {
     }
 }
 
+/// Derives a short segment label from a checkpoint path: the parent directory
+/// name with a leading `phaseN-`/`phaseN_` ordering prefix stripped, else the
+/// file stem. Kept in sync with `emry_tui::ui::checkpoint_label` (the reference
+/// implementation); the paired unit tests below assert the same cases.
+fn checkpoint_label(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let raw = p
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .or_else(|| p.file_stem())
+        .map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
+    raw.split_once(['-', '_'])
+        .filter(|(head, _)| {
+            head.starts_with("phase") && head[5..].chars().all(|c| c.is_ascii_digit())
+        })
+        .map_or(raw.clone(), |(_, rest)| rest.to_string())
+}
+
 fn phase_str(phase: emry_core::Phase) -> String {
     serde_json::to_value(phase)
         .ok()
@@ -207,7 +239,7 @@ mod tests {
         s.apply(&batch(1, &[(0, 0.9)]));
         s.apply(&Event::PhaseChange(Phase::Eval)); // transitions at step 1
         s.apply(&Event::Checkpoint {
-            path: "/ckpt/2.pt".into(),
+            path: "/out/phase2-knowledge/adapters.pt".into(),
             step: 2,
         });
         // Each value carries its step (parallel to history).
@@ -219,12 +251,28 @@ mod tests {
         assert_eq!(s.phases.len(), 1);
         assert_eq!(s.phases[0].step, 1);
         assert_eq!(s.phases[0].phase, "EVAL");
-        // The checkpoint step is recorded for a marker.
-        assert_eq!(s.checkpoints.iter().copied().collect::<Vec<_>>(), vec![2]);
+        // The checkpoint records its step (marker) and a phase-segment label
+        // derived from the path (phaseN- prefix stripped).
+        assert_eq!(s.checkpoints.len(), 1);
+        assert_eq!(s.checkpoints[0].step, 2);
+        assert_eq!(s.checkpoints[0].label, "knowledge");
         // They serialize for the browser.
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"phases\"") && json.contains("\"checkpoints\""));
         assert!(json.contains("\"steps\""));
+    }
+
+    #[test]
+    fn checkpoint_label_matches_tui_reference() {
+        // Same cases the TUI's checkpoint_label test asserts, so the two copies
+        // can't silently drift.
+        assert_eq!(
+            checkpoint_label("out/phase1-reasoning/adapters.safetensors"),
+            "reasoning"
+        );
+        assert_eq!(checkpoint_label("runs/phase12_code/x.pt"), "code");
+        assert_eq!(checkpoint_label("ckpts/warmup/x.pt"), "warmup"); // no phaseN prefix
+        assert_eq!(checkpoint_label("step_200.pt"), "step_200"); // file stem fallback
     }
 
     #[test]
