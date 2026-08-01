@@ -98,7 +98,7 @@ jobs:
           # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
           # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
           token: ${{ secrets.GH_COM_TOKEN }}
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Install package + CPU PyTorch
         run: |
@@ -129,7 +129,7 @@ jobs:
           # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
           # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
           token: ${{ secrets.GH_COM_TOKEN }}
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Build sdist + abi3 wheel (CLI binary bundled)
         run: |
@@ -177,7 +177,7 @@ jobs:
           # `Version <x> was not found in the local cache`. GH_COM_TOKEN is a real github.com PAT
           # (org-level secret; named GH_COM_* because Forgejo refuses secret names starting GITHUB_).
           token: ${{ secrets.GH_COM_TOKEN }}
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Run pre-commit
         run: pip install pre-commit && pre-commit run --all-files
