@@ -429,7 +429,11 @@
         els.alert.textContent = a ? a.message : "no alerts — all calm";
       }
 
-      const ws = new WebSocket(`ws://${location.host}/ws`);
+      // Match the page's scheme so the stream also works under TLS (--tls-cert):
+      // wss:// on an https page, ws:// otherwise. A hardcoded ws:// is blocked as
+      // mixed content when the dashboard is served over https.
+      const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${wsScheme}//${location.host}/ws`);
       ws.onopen = () => (els.status.textContent = "live");
       ws.onclose = () => (els.status.textContent = "disconnected");
       ws.onmessage = (ev) => {
