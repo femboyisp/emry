@@ -228,7 +228,11 @@ mod tests {
         assert!(html.contains("<canvas"));
         assert!(html.contains("/ws"));
         assert!(html.contains("#c4714a")); // terracotta
-        assert!(!html.contains("http://") || html.contains("ws://"));
+        // The WS scheme follows the page protocol (ws:// plaintext, wss:// under
+        // TLS) rather than a hardcoded ws://, so the stream works with --tls-cert.
+        assert!(html.contains("wss:") && html.contains("ws:"));
+        // Self-hosted: no external plaintext or CDN URLs (air-gap friendly).
+        assert!(!html.contains("http://"));
         assert!(!html.contains("https://"), "no CDN — air-gap friendly");
     }
 
