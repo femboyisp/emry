@@ -292,6 +292,24 @@ mod tests {
     }
 
     #[test]
+    fn event_log_tailer_parses_stage_changes() {
+        // File-mode read-back: a STAGE_CHANGE row in events.jsonl must
+        // deserialize to Event::StageChange for `emry watch --run-dir`.
+        let f = TempFile::new();
+        let stage = Event::StageChange {
+            name: "reasoning".into(),
+            step: 12,
+        };
+        f.append(&format!("{}\n", serde_json::to_string(&stage).unwrap()));
+        let mut t = EventLogTailer::new(f.path());
+        let events = t.poll().unwrap();
+        assert!(matches!(
+            &events[..],
+            [Event::StageChange { name, step: 12 }] if name == "reasoning"
+        ));
+    }
+
+    #[test]
     fn event_log_tailer_parses_checkpoints_incrementally() {
         let f = TempFile::new();
         let ckpt = Event::Checkpoint {

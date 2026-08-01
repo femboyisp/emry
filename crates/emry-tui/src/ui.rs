@@ -79,6 +79,17 @@ pub fn checkpoint_label(path: &str) -> String {
         .map_or(raw.clone(), |(_, rest)| rest.to_string())
 }
 
+/// A named curriculum stage the run entered at `step`. Like [`Checkpoint`],
+/// stage steps are segment boundaries for the phase-aware chart, but the label
+/// is the explicit name from `run.stage(...)` rather than derived from a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageMark {
+    /// Step the stage began at.
+    pub step: u64,
+    /// Explicit stage name (segment label).
+    pub label: String,
+}
+
 /// A phase transition: the run entered `phase` at `step` (for chart shading).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseSpan {
@@ -124,6 +135,9 @@ pub struct UiState {
     pub phases: VecDeque<PhaseSpan>,
     /// Checkpoints taken (vertical markers + phase-segment boundaries; capped FIFO).
     pub checkpoints: VecDeque<Checkpoint>,
+    /// Named curriculum stages (explicit phase-segment boundaries; capped FIFO).
+    /// When non-empty these take precedence over checkpoints as chart segments.
+    pub stages: VecDeque<StageMark>,
     /// Prior-run series overlaid on the chart for comparison (empty if none).
     pub baseline: Vec<BaselineSeries>,
     labels: BTreeMap<u16, String>,
@@ -146,6 +160,7 @@ impl Default for UiState {
             finished: false,
             phases: VecDeque::new(),
             checkpoints: VecDeque::new(),
+            stages: VecDeque::new(),
             baseline: Vec::new(),
             labels: BTreeMap::new(),
             max_history: DEFAULT_HISTORY,
@@ -207,6 +222,13 @@ impl UiState {
                     label: checkpoint_label(path),
                 });
                 cap_front(&mut self.checkpoints, self.max_markers);
+            }
+            Event::StageChange { name, step } => {
+                self.stages.push_back(StageMark {
+                    step: *step,
+                    label: name.clone(),
+                });
+                cap_front(&mut self.stages, self.max_markers);
             }
             Event::MetricsRegistered { names } => {
                 for (id, name) in names {
@@ -377,16 +399,15 @@ fn chart_yscale(history: &[f64], base: Option<Baseline>) -> ((f64, f64), Option<
     }
 }
 
-/// Splits `[s0, s1]` at `bounds` (checkpoint steps, ascending) into per-phase
-/// [`Segment`]s each y-scaled to its own data, with a label per segment (from
-/// the checkpoint that ends it; the trailing live segment is `current`).
+/// Splits `[s0, s1]` at `marks` (each a `(boundary step, label)`, ascending)
+/// into per-phase [`Segment`]s each y-scaled to its own data. Each segment is
+/// labeled by the mark that ends it; the trailing live segment is `current`.
 fn build_segments(
     values: &[f64],
     steps: &[u64],
     s0: u64,
     s1: u64,
-    bounds: &[u64],
-    checkpoints: &VecDeque<Checkpoint>,
+    marks: &[(u64, String)],
 ) -> (Vec<Segment>, Vec<String>) {
     let range_in = |a: u64, b: u64| {
         let vs: Vec<f64> = steps
@@ -397,24 +418,18 @@ fn build_segments(
             .collect();
         value_range(&vs).unwrap_or((0.0, 1.0))
     };
-    let label_at = |step: u64| {
-        checkpoints
-            .iter()
-            .find(|c| c.step == step)
-            .map_or_else(|| "?".to_string(), |c| c.label.clone())
-    };
     let (mut segs, mut labels) = (Vec::new(), Vec::new());
     let mut start = s0;
-    for &b in bounds {
-        let (min, max) = range_in(start, b);
+    for (b, label) in marks {
+        let (min, max) = range_in(start, *b);
         segs.push(Segment {
             start,
-            end: b,
+            end: *b,
             min,
             max,
         });
-        labels.push(label_at(b));
-        start = b;
+        labels.push(label.clone());
+        start = *b;
     }
     let (min, max) = range_in(start, s1);
     segs.push(Segment {
@@ -444,18 +459,30 @@ fn render_chart(frame: &mut Frame, area: Rect, state: &UiState) {
     let s0 = steps.first().copied().unwrap_or(0);
     let s1 = steps.last().copied().unwrap_or(0);
 
-    // Phase-aware: if checkpoints split the window, scale each segment to its
-    // own range so differently-scaled phases each read clearly. (The baseline
-    // overlay can't share per-segment scales, so it's omitted in this mode.)
-    let bounds: Vec<u64> = state
-        .checkpoints
-        .iter()
-        .map(|c| c.step)
-        .filter(|&st| st > s0 && st < s1)
+    // Phase-aware: if stage/checkpoint boundaries split the window, scale each
+    // segment to its own range so differently-scaled phases each read clearly.
+    // Explicit `run.stage(...)` marks take precedence over checkpoint-derived
+    // labels. (The baseline overlay can't share per-segment scales, so it's
+    // omitted in this mode.)
+    let marks: Vec<(u64, String)> = if state.stages.is_empty() {
+        state
+            .checkpoints
+            .iter()
+            .map(|c| (c.step, c.label.clone()))
+            .collect()
+    } else {
+        state
+            .stages
+            .iter()
+            .map(|s| (s.step, s.label.clone()))
+            .collect()
+    };
+    let marks: Vec<(u64, String)> = marks
+        .into_iter()
+        .filter(|&(st, _)| st > s0 && st < s1)
         .collect();
-    if !bounds.is_empty() {
-        let (segments, labels) =
-            build_segments(&history, &steps, s0, s1, &bounds, &state.checkpoints);
+    if !marks.is_empty() {
+        let (segments, labels) = build_segments(&history, &steps, s0, s1, &marks);
         let chart = render_braille_segments(&history, &steps, inner_w, inner_h, s0, s1, &segments);
         let title = format!(
             "{} (latest {:.4})  ·  {}",
@@ -931,12 +958,8 @@ mod tests {
     fn build_segments_splits_and_labels_by_checkpoint() {
         let steps: Vec<u64> = (0..=9).collect();
         let values: Vec<f64> = vec![2.0, 1.8, 1.6, 1.4, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5];
-        let mut ckpts = VecDeque::new();
-        ckpts.push_back(Checkpoint {
-            step: 4,
-            label: "reasoning".into(),
-        });
-        let (segs, labels) = build_segments(&values, &steps, 0, 9, &[4], &ckpts);
+        let marks = vec![(4u64, "reasoning".to_string())];
+        let (segs, labels) = build_segments(&values, &steps, 0, 9, &marks);
         assert_eq!(segs.len(), 2);
         assert_eq!((segs[0].start, segs[0].end), (0, 4));
         assert_eq!((segs[1].start, segs[1].end), (4, 9));
@@ -964,6 +987,35 @@ mod tests {
         let text = buffer_text(terminal.backend());
         assert!(text.contains("reasoning"), "segment label in title");
         assert!(text.contains("current"), "live segment labeled");
+    }
+
+    #[test]
+    fn stages_take_precedence_over_checkpoints_as_segments() {
+        let mut s = UiState::with_labels(&[(MetricId(0), "loss")]);
+        for step in 0..10u64 {
+            s.apply(&batch(
+                step,
+                &[(0, 2.0 - f64::from(u32::try_from(step).unwrap()) * 0.1)],
+            ));
+        }
+        // A checkpoint AND an explicit stage inside the window; the stage wins.
+        s.apply(&Event::Checkpoint {
+            path: "out/phase9-ckpthidden/x.pt".into(),
+            step: 6,
+        });
+        s.apply(&Event::StageChange {
+            name: "reasoning".into(),
+            step: 4,
+        });
+        assert_eq!(s.stages.len(), 1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| render(f, &s)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("reasoning"), "stage label drives the segment");
+        assert!(
+            !text.contains("ckpthidden"),
+            "checkpoint label is not a segment label when a stage is set"
+        );
     }
 
     #[test]

@@ -39,8 +39,15 @@ async fn main() {
                 values: vec![(loss, value), (lr, 1e-3), (ema, base)],
             });
             if step % 300 == 0 && step > 0 {
+                // Curriculum-style paths so the phase-aware chart derives a
+                // distinct segment label per stage (phaseN- prefix stripped).
+                let stages = ["reasoning", "knowledge", "code", "math", "polish"];
+                let n = u64::try_from(stages.len()).unwrap_or(1);
+                let idx = usize::try_from((step / 300 - 1) % n).unwrap_or(0);
+                let stage = stages[idx];
+                let phase_n = step / 300;
                 feed.publish(&Event::Checkpoint {
-                    path: format!("/ckpt/step_{step}.pt"),
+                    path: format!("/ckpt/phase{phase_n}-{stage}/step_{step}.pt"),
                     step,
                 });
             }

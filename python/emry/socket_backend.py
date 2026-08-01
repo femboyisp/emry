@@ -69,6 +69,9 @@ class SocketBackend:
     def checkpoint(self, path: str, step: int) -> None:
         self._send(wire.checkpoint(path, step))
 
+    def stage(self, name: str, step: int) -> None:
+        self._send(wire.stage_change(name, step))
+
     def finish(self, *, steps: int, reason: str) -> None:
         try:
             self._send(wire.run_finished(time.time() - self._start_secs, reason))

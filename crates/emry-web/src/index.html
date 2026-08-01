@@ -153,51 +153,35 @@
         CHECKPOINT: "rgba(107, 101, 96, 0.18)",
       };
 
-      function drawChart(metric, state) {
-        const w = els.canvas.width;
-        const h = els.canvas.height;
-        ctx.clearRect(0, 0, w, h);
-        if (!metric || !metric.history || metric.history.length === 0) return;
-        const data = metric.history.slice(-WINDOW);
-        const steps = (metric.steps || []).slice(-WINDOW);
-        const pad = 24;
-        // Step-based x-axis over the visible window.
-        const s0 = steps.length ? steps[0] : 0;
-        const s1 = steps.length ? steps[steps.length - 1] : data.length - 1;
-        const stepSpan = s1 - s0 || 1;
-
-        // Baseline points whose step falls inside the visible window — drawn as
-        // a dashed overlay and included in the y-scale so both curves align.
-        const base = baselineFor(metric.label);
-        const baseWin = [];
-        if (base) {
-          for (let i = 0; i < base.steps.length; i++) {
-            const st = base.steps[i];
-            if (st >= s0 && st <= s1) baseWin.push([st, base.values[i]]);
-          }
+      // EMA smoothing + adaptive span, ported from the TUI
+      // (crates/emry-tui/src/chart.rs) so the web and terminal charts read
+      // identically: noisy per-step loss becomes a clean trend line.
+      function emaSmooth(values, span) {
+        const alpha = 2 / (Math.max(1, span) + 1);
+        const out = [];
+        let acc = NaN;
+        for (const v of values) {
+          if (Number.isFinite(v)) acc = Number.isFinite(acc) ? alpha * v + (1 - alpha) * acc : v;
+          out.push(acc);
         }
-
+        return out;
+      }
+      function adaptiveSpan(n) {
+        return Math.min(64, Math.max(3, Math.round(n * 0.08)));
+      }
+      function valueRange(values) {
         let min = Infinity,
           max = -Infinity;
-        for (const v of data) {
+        for (const v of values)
           if (Number.isFinite(v)) {
             if (v < min) min = v;
             if (v > max) max = v;
           }
-        }
-        for (const [, v] of baseWin) {
-          if (Number.isFinite(v)) {
-            if (v < min) min = v;
-            if (v > max) max = v;
-          }
-        }
-        if (!Number.isFinite(min)) return;
-        const span = max - min || 1;
-        const xStep = (st) => pad + ((st - s0) / stepSpan) * (w - 2 * pad);
-        const xIdx = (i) => xStep(steps.length ? steps[i] : i);
-        const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
+        return Number.isFinite(min) ? [min, max] : null;
+      }
 
-        // Phase background bands: shade [span.step, next.step) by phase.
+      // Phase background bands: shade [span.step, next.step) by phase.
+      function drawPhaseBands(state, s0, s1, xStep, pad, h) {
         const phases = (state && state.phases) || [];
         for (let p = 0; p < phases.length; p++) {
           const tint = PHASE_TINT[phases[p].phase];
@@ -208,18 +192,142 @@
           ctx.fillStyle = tint;
           ctx.fillRect(xStep(from), pad, xStep(Math.min(to, s1)) - xStep(from), h - 2 * pad);
         }
+      }
 
-        // Checkpoint markers: dashed vertical lines.
+      // Draws the selected metric. Returns the segment label chain (e.g.
+      // ["reasoning","knowledge","current"]) in phase-aware mode, else null.
+      //
+      // Phase-aware: checkpoint steps strictly inside the window split the curve
+      // into segments, each y-scaled to its own range so differently-scaled
+      // phases read clearly (matches the TUI). The baseline overlay can't share
+      // per-segment scales, so it is omitted in this mode.
+      function drawChart(metric, state) {
+        const w = els.canvas.width;
+        const h = els.canvas.height;
+        const pad = 24;
+        ctx.clearRect(0, 0, w, h);
+        if (!metric || !metric.history || metric.history.length === 0) return null;
+        const raw = metric.history.slice(-WINDOW);
+        const steps = (metric.steps || []).slice(-WINDOW);
+        const data = emaSmooth(raw, adaptiveSpan(raw.length));
+        const s0 = steps.length ? steps[0] : 0;
+        const s1 = steps.length ? steps[steps.length - 1] : data.length - 1;
+        const stepSpan = s1 - s0 || 1;
+        const xStep = (st) => pad + ((st - s0) / stepSpan) * (w - 2 * pad);
+        const xIdx = (i) => xStep(steps.length ? steps[i] : i);
+
+        drawPhaseBands(state, s0, s1, xStep, pad, h);
+
+        // Explicit run.stage() marks take precedence over checkpoint-derived
+        // labels as segment boundaries; both are {step,label}.
         const ckpts = (state && state.checkpoints) || [];
+        const source = state && state.stages && state.stages.length ? state.stages : ckpts;
+        const marks = source
+          .map((m) => ({ step: m.step, label: m.label }))
+          .filter((m) => m.step > s0 && m.step < s1)
+          .sort((a, b) => a.step - b.step);
+        return marks.length
+          ? drawSegmented(data, steps, s0, s1, marks, xStep, pad, w, h)
+          : drawSingle(metric, data, steps, s0, s1, ckpts, xStep, xIdx, pad, w, h);
+      }
+
+      // Panel-backed text label so numbers don't clash with the gridlines.
+      function yLabel(text, yy) {
+        ctx.font = "11px monospace";
+        const tw = ctx.measureText(text).width;
+        ctx.fillStyle = "#221e1a";
+        ctx.fillRect(2, yy - 9, tw + 4, 12);
+        ctx.fillStyle = C.gray;
+        ctx.fillText(text, 3, yy);
+      }
+
+      // Phase-aware: one connected polyline per checkpoint-delimited segment,
+      // each scaled to its own [min,max]. Labels come from the checkpoint that
+      // ends each segment; the trailing live segment is "current".
+      function drawSegmented(data, steps, s0, s1, marks, xStep, pad, w, h) {
+        const edges = [s0, ...marks.map((m) => m.step), s1];
+        const labelAt = (step) => {
+          const m = marks.find((m) => m.step === step);
+          return m ? m.label : "?";
+        };
+        const labels = [];
+        for (let k = 0; k + 1 < edges.length; k++) {
+          const a = edges[k];
+          const b = edges[k + 1];
+          const isLast = k + 2 === edges.length;
+          const idxs = [];
+          for (let i = 0; i < steps.length; i++)
+            if (steps[i] >= a && steps[i] <= b) idxs.push(i);
+          const [min, max] = valueRange(idxs.map((i) => data[i])) || [0, 1];
+          const span = max - min || 1;
+          const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
+          // Segment polyline (broken across non-finite values).
+          ctx.strokeStyle = C.terracotta;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          let started = false;
+          for (const i of idxs) {
+            const v = data[i];
+            if (!Number.isFinite(v)) {
+              started = false;
+              continue;
+            }
+            const px = xStep(steps[i]);
+            const py = y(v);
+            started ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+            started = true;
+          }
+          ctx.stroke();
+          // Dashed divider at the segment's right boundary (not at the far edge).
+          if (!isLast) {
+            ctx.save();
+            ctx.setLineDash([3, 3]);
+            ctx.strokeStyle = "rgba(245, 240, 232, 0.35)";
+            ctx.beginPath();
+            ctx.moveTo(xStep(b), pad);
+            ctx.lineTo(xStep(b), h - pad);
+            ctx.stroke();
+            ctx.restore();
+          }
+          const label = isLast ? "current" : labelAt(b);
+          labels.push(label);
+          // Segment label centered at the top of its band.
+          ctx.font = "11px monospace";
+          ctx.fillStyle = C.gray;
+          ctx.textAlign = "center";
+          ctx.fillText(label, (xStep(a) + xStep(b)) / 2, pad + 10);
+          ctx.textAlign = "left";
+        }
+        return labels;
+      }
+
+      // Single-scale mode: whole window on one y-scale, with the dashed
+      // baseline overlay and checkpoint markers.
+      function drawSingle(metric, data, steps, s0, s1, ckpts, xStep, xIdx, pad, w, h) {
+        const base = baselineFor(metric.label);
+        const baseWin = [];
+        if (base) {
+          for (let i = 0; i < base.steps.length; i++) {
+            const st = base.steps[i];
+            if (st >= s0 && st <= s1) baseWin.push([st, base.values[i]]);
+          }
+        }
+        const scaleVals = data.concat(baseWin.map(([, v]) => v));
+        const range = valueRange(scaleVals);
+        if (!range) return null;
+        const [min, max] = range;
+        const span = max - min || 1;
+        const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
+
+        // Checkpoint markers (dashed verticals) for any checkpoint in-window.
         ctx.save();
         ctx.setLineDash([3, 3]);
         ctx.strokeStyle = "rgba(245, 240, 232, 0.35)";
-        for (const st of ckpts) {
-          if (st < s0 || st > s1) continue;
-          const cx = xStep(st);
+        for (const c of ckpts) {
+          if (c.step < s0 || c.step > s1) continue;
           ctx.beginPath();
-          ctx.moveTo(cx, pad);
-          ctx.lineTo(cx, h - pad);
+          ctx.moveTo(xStep(c.step), pad);
+          ctx.lineTo(xStep(c.step), h - pad);
           ctx.stroke();
         }
         ctx.restore();
@@ -248,11 +356,19 @@
           ctx.stroke();
           ctx.restore();
         }
-        // the line
+        // the live line (broken across non-finite values)
         ctx.strokeStyle = C.terracotta;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        data.forEach((v, i) => (i ? ctx.lineTo(xIdx(i), y(v)) : ctx.moveTo(xIdx(i), y(v))));
+        let started = false;
+        data.forEach((v, i) => {
+          if (!Number.isFinite(v)) {
+            started = false;
+            return;
+          }
+          started ? ctx.lineTo(xIdx(i), y(v)) : ctx.moveTo(xIdx(i), y(v));
+          started = true;
+        });
         ctx.stroke();
         // current-value dot at the latest point
         const lastV = data[data.length - 1];
@@ -262,18 +378,9 @@
           ctx.arc(xIdx(data.length - 1), y(lastV), 3, 0, Math.PI * 2);
           ctx.fill();
         }
-        // y-axis value labels with a panel-colored backing so they don't clash
-        // with the gridlines.
-        ctx.font = "11px monospace";
-        const label = (text, yy) => {
-          const tw = ctx.measureText(text).width;
-          ctx.fillStyle = "#221e1a";
-          ctx.fillRect(2, yy - 9, tw + 4, 12);
-          ctx.fillStyle = C.gray;
-          ctx.fillText(text, 3, yy);
-        };
-        label(max.toPrecision(4), y(max) + 9);
-        label(min.toPrecision(4), y(min) - 2);
+        yLabel(max.toPrecision(4), y(max) + 9);
+        yLabel(min.toPrecision(4), y(min) - 2);
+        return null;
       }
 
       function renderCards(metrics) {
@@ -283,13 +390,20 @@
           const card = document.createElement("div");
           card.className = "card" + (m.label === selected ? " selected" : "");
           card.textContent = `${m.label} = ${Number(m.latest).toPrecision(5)}`;
-          card.onclick = () => {
-            selected = m.label;
-            render();
-          };
+          card.dataset.label = m.label;
           els.cards.appendChild(card);
         }
       }
+
+      // Delegated click: the card list is rebuilt on every 10 Hz snapshot, so a
+      // per-card onclick is destroyed between mousedown and mouseup and the click
+      // never fires. One listener on the stable container survives the rebuilds.
+      els.cards.addEventListener("click", (e) => {
+        const card = e.target.closest(".card");
+        if (!card) return;
+        selected = card.dataset.label;
+        render();
+      });
 
       function render() {
         const s = latestState;
@@ -301,11 +415,15 @@
         els.status.textContent = s.finished ? "finished" : "running";
         renderCards(s.metrics || []);
         const metric = (s.metrics || []).find((m) => m.label === selected);
-        const cmp = metric && baselineFor(metric.label) ? "  ·  ⸺ ⸺ baseline" : "";
+        const segLabels = drawChart(metric, s);
+        // Segment mode shows the phase label chain; single-scale mode notes the
+        // baseline overlay (which segment mode omits, so don't advertise it).
+        let suffix = "";
+        if (segLabels && segLabels.length) suffix = "  ·  " + segLabels.join(" │ ");
+        else if (metric && baselineFor(metric.label)) suffix = "  ·  ⸺ ⸺ baseline";
         els.chartTitle.textContent = metric
-          ? `${metric.label} (latest ${Number(metric.latest).toPrecision(5)})${cmp}`
+          ? `${metric.label} (latest ${Number(metric.latest).toPrecision(5)})${suffix}`
           : "—";
-        drawChart(metric, s);
         const a = s.alerts && s.alerts.length ? s.alerts[s.alerts.length - 1] : null;
         els.alert.className = "alert" + (a ? " " + a.severity : "");
         els.alert.textContent = a ? a.message : "no alerts — all calm";
